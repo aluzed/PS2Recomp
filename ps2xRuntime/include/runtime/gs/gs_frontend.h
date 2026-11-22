@@ -10,6 +10,7 @@
 
 #include "runtime/gs/gs_backend.h"
 #include "runtime/gs/gs_dump_recorder.h"
+#include "runtime/gs/gs_parallel_bridge.h"
 
 struct GSDebugSnapshot
 {
@@ -182,6 +183,7 @@ private:
     uint32_t m_localMemorySize = 0u;
     struct GSRegisters *m_privRegs = nullptr;
     GSDumpRecorder m_dumpRecorder;
+    std::unique_ptr<GSParallelBridge> m_parallel; // hardware GS when available
     mutable std::recursive_mutex m_stateMutex;
     mutable std::mutex m_backendLifetimeMutex;
     mutable std::mutex m_presentationMutex;

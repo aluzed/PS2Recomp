@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/gs/gs_cpu_backend.h"
 #include "ps2_log.h"
@@ -121,6 +122,16 @@ void GS::init(uint8_t *vram, uint32_t vramSize, GSRegisters *privRegs)
     m_backend->Initialize(vram, vramSize);
     reset();
     m_dumpRecorder.startFromEnvironment(vram, vramSize);
+#if defined(PS2X_ENABLE_PARALLEL_GS)
+    m_parallel.reset();
+    const char *backend = std::getenv("PS2X_GS_BACKEND");
+    if (!backend || std::strcmp(backend, "cpu") != 0)
+    {
+        auto bridge = std::make_unique<GSParallelBridge>();
+        if (bridge->initialize(vram, vramSize))
+            m_parallel = std::move(bridge);
+    }
+#endif
 }
 
 void GS::reset()
@@ -540,6 +551,22 @@ void GS::latchHostPresentationFrame()
         }
         request = buildPresentationRequestUnlocked();
         m_dumpRecorder.recordVsync(*m_privRegs, static_cast<uint32_t>(request.vsyncTick & 1ull));
+        if (m_parallel)
+        {
+            std::vector<uint8_t> pixels;
+            uint32_t width = 0u, height = 0u;
+            const bool ok = m_parallel->vsync(*m_privRegs, static_cast<uint32_t>(request.vsyncTick & 1ull),
+                                              pixels, width, height);
+            std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
+            if (ok)
+            {
+                m_hostPresentationFrame = std::move(pixels);
+                m_hostPresentationWidth = width;
+                m_hostPresentationHeight = height;
+            }
+            m_hasHostPresentationFrame = ok || m_hasHostPresentationFrame;
+            return;
+        }
     }
 
     PresentationFrame frame{};
@@ -647,6 +674,8 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
     if (!data || sizeBytes < 16 || !m_backend)
         return;
     m_dumpRecorder.recordTransfer(3u, data, sizeBytes);
+    if (m_parallel)
+        m_parallel->transfer(3u, data, sizeBytes);
 
     if (tryProcessNativeImageUploadPacket(data, sizeBytes))
         return;
@@ -790,6 +819,8 @@ void GS::uploadImageNative(uint64_t bitbltbuf,
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_dumpRecorder.recordImageUpload(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
+    if (m_parallel)
+        m_parallel->imageUpload(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
     uploadImageNativeUnlocked(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
 }
 
@@ -1069,6 +1100,8 @@ void GS::writeRegister(uint8_t regAddr, uint64_t value)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_dumpRecorder.recordRegister(regAddr, value);
+    if (m_parallel)
+        m_parallel->writeRegister(regAddr, value);
     writeRegisterUnlocked(regAddr, value);
 }
 
@@ -1583,7 +1616,8 @@ void GS::vertexKick(bool drawing)
     {
         GSPrimitiveBatch batch = buildDrawBatch(needed);
         updatePreferredDisplaySourceForDraw(batch);
-        m_backend->Submit(batch);
+        if (!m_parallel) // the hardware GS rasterizes from the forwarded stream
+            m_backend->Submit(batch);
         recordDrawDebugEventUnlocked(needed);
     }
 
