@@ -1086,6 +1086,84 @@ void register_ps2_gs_tests()
             }
         });
 
+        // Street Fighter EX3 draws its 8x8 ASCII font this way: PSMT8 128x64
+        // texture (TBP 0x1B40, TBW 2) with a CT32 CSM1 CLUT, FST sprites into
+        // a PSMCT16 frame, coordinates offset by XYOFFSET 0x6000.
+        tc.Run("PSMT8 font sprites into a PSMCT16 frame keep glyph order and position", [](TestCase &t)
+        {
+            std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
+            GS gs;
+            gs.init(vram.data(), static_cast<uint32_t>(vram.size()), nullptr);
+
+            constexpr uint32_t kTbp = 0x1B40u;
+            constexpr uint32_t kCbp = 0x1BB4u;
+            constexpr uint32_t kFbw = 10u;
+            auto colorFor = [](uint32_t index) -> uint32_t
+            {
+                const uint32_t r = (index & 31u) << 3;
+                const uint32_t g = ((index >> 5) & 31u) << 3;
+                return 0x80000000u | (0x80u << 16) | (g << 8) | r;
+            };
+            // Texture: every 8x8 cell holds a unique index (1..128).
+            for (uint32_t y = 0u; y < 64u; ++y)
+                for (uint32_t x = 0u; x < 128u; ++x)
+                    gs.WriteVram(GS_PSM_T8, kTbp, 2u, x, y, 1u + (y / 8u) * 16u + (x / 8u));
+            // CLUT: CSM1 stores entry i at the bit 3/4 swapped position.
+            for (uint32_t i = 0u; i < 256u; ++i)
+            {
+                const uint32_t slot = (i & 0xE7u) | ((i & 0x08u) << 1) | ((i & 0x10u) >> 1);
+                gs.WriteVram(GS_PSM_CT32, kCbp, 1u, slot % 16u, slot / 16u, colorFor(i));
+            }
+            gs.writeRegister(GS_REG_TEXFLUSH, 0ull);
+
+            gs.writeRegister(GS_REG_FRAME_1, (0ull << 0) | (static_cast<uint64_t>(kFbw) << 16) |
+                                                  (static_cast<uint64_t>(GS_PSM_CT16) << 24));
+            gs.writeRegister(GS_REG_ZBUF_1, (1ull << 32));
+            // Register values captured from the game while it draws the text.
+            gs.writeRegister(GS_REG_SCISSOR_1, 0xDF0000027F0000ull);   // 640x224 field
+            gs.writeRegister(GS_REG_XYOFFSET_1, 0x790000006C00ull);   // OFX 0x6C00, OFY 0x7900
+            gs.writeRegister(GS_REG_TEST_1, 0x3000Dull);
+            gs.writeRegister(GS_REG_ALPHA_1, 0x44ull);
+            gs.writeRegister(GS_REG_TEX1_1, 0ull);
+            gs.writeRegister(GS_REG_CLAMP_1, 0x5ull);
+            gs.writeRegister(GS_REG_DTHE, 1ull);
+            gs.writeRegister(GS_REG_COLCLAMP, 1ull);
+            const uint64_t tex0 = static_cast<uint64_t>(kTbp) | (2ull << 14) |
+                                  (static_cast<uint64_t>(GS_PSM_T8) << 20) | (7ull << 26) | (6ull << 30) |
+                                  (1ull << 34) | (static_cast<uint64_t>(kCbp) << 37) | (1ull << 61);
+            gs.writeRegister(GS_REG_TEX0_1, tex0);
+            gs.writeRegister(GS_REG_PRIM, 0x156ull); // SPRITE, TME, ABE, FST
+            gs.writeRegister(GS_REG_RGBAQ, 0x80808080ull);
+
+            // Draw characters 0x30..0x3F at x = 16 + 8 * i, y = 40.
+            constexpr uint32_t kY = 40u;
+            for (uint32_t i = 0u; i < 16u; ++i)
+            {
+                const uint32_t c = 0x30u + i;
+                const uint32_t u = (c & 15u) * 8u;
+                const uint32_t v = (c >> 4) * 8u;
+                const uint32_t x = 16u + 8u * i;
+                gs.writeRegister(GS_REG_UV, (static_cast<uint64_t>(u << 4)) | (static_cast<uint64_t>(v << 4) << 16));
+                gs.writeRegister(GS_REG_XYZ2, (static_cast<uint64_t>(x * 16u + 0x6C00u)) |
+                                                  (static_cast<uint64_t>(kY * 16u + 0x7900u) << 16));
+                gs.writeRegister(GS_REG_UV, (static_cast<uint64_t>((u + 8u) << 4)) | (static_cast<uint64_t>((v + 8u) << 4) << 16));
+                gs.writeRegister(GS_REG_XYZ2, (static_cast<uint64_t>((x + 8u) * 16u + 0x6C00u - 1u)) |
+                                                  (static_cast<uint64_t>((kY + 8u) * 16u + 0x7900u - 1u) << 16));
+            }
+
+            for (uint32_t i = 0u; i < 16u; ++i)
+            {
+                const uint32_t c = 0x30u + i;
+                const uint32_t expectedIndex = 1u + (c >> 4) * 16u + (c & 15u);
+                const uint32_t expected = colorFor(expectedIndex);
+                const uint32_t pixel = gs.ReadVram(GS_PSM_CT16, 0u, kFbw, 16u + 8u * i + 4u, kY + 4u);
+                const uint32_t r = (pixel & 31u) << 3;
+                const uint32_t g = ((pixel >> 5) & 31u) << 3;
+                t.Equals(r | (g << 8), expected & 0xFFFFu,
+                         "glyph " + std::to_string(i) + " should sample its own texture cell at its own position");
+            }
+        });
+
         tc.Run("fullscreen display copy tracks the preferred presentation source frame", [](TestCase &t)
         {
             std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
