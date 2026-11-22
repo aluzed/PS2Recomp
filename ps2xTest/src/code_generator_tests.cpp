@@ -1911,6 +1911,116 @@ void register_code_generator_tests()
                      "configured table should avoid broad JR fallback labels");
         });
 
+        // GCC often materialises the table base in another register than the LUI
+        // target (lui v1; addiu v0,v1,lo; sll v1,a0,2; addu v1,v1,v0), or hoists
+        // the LUI into a callee-saved register in the prologue, past a call.
+        tc.Run("jump table base resolves through register def chain", [](TestCase &t) {
+            constexpr uint32_t tableAddress = 0x004C7650u;
+            const uint16_t hi = static_cast<uint16_t>(((tableAddress + 0x8000u) >> 16) & 0xFFFFu);
+            const uint16_t lo = static_cast<uint16_t>(tableAddress & 0xFFFFu);
+
+            auto makeLui = [](uint32_t address, uint32_t rt, uint16_t imm) {
+                Instruction inst{};
+                inst.address = address;
+                inst.opcode = OPCODE_LUI;
+                inst.rt = rt;
+                inst.immediate = imm;
+                return inst;
+            };
+            auto makeAddiu = [](uint32_t address, uint32_t rt, uint32_t rs, uint16_t imm) {
+                Instruction inst{};
+                inst.address = address;
+                inst.opcode = OPCODE_ADDIU;
+                inst.rt = rt;
+                inst.rs = rs;
+                inst.immediate = imm;
+                inst.simmediate = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(imm)));
+                return inst;
+            };
+            auto makeSpecial = [](uint32_t address, uint32_t function, uint32_t rd, uint32_t rs, uint32_t rt, uint32_t sa) {
+                Instruction inst{};
+                inst.address = address;
+                inst.opcode = OPCODE_SPECIAL;
+                inst.function = function;
+                inst.rd = rd;
+                inst.rs = rs;
+                inst.rt = rt;
+                inst.sa = sa;
+                return inst;
+            };
+            auto makeLw = [](uint32_t address, uint32_t rt, uint32_t rs) {
+                Instruction inst{};
+                inst.address = address;
+                inst.opcode = OPCODE_LW;
+                inst.rt = rt;
+                inst.rs = rs;
+                return inst;
+            };
+
+            JumpTable configured{};
+            configured.address = tableAddress;
+            configured.entries.push_back({0u, 0x1720u});
+            configured.entries.push_back({1u, 0x1730u});
+
+            {
+                // lui v1 (3) / addiu v0 (2), v1 / sll v1, a0 / addu v1, v1, v0
+                Function func{};
+                func.name = "jr_table_base_in_other_register";
+                func.start = 0x1700;
+                func.end = 0x1740;
+                func.isRecompiled = true;
+                std::vector<Instruction> insts = {
+                    makeLui(0x1700, 3, hi),
+                    makeAddiu(0x1704, 2, 3, lo),
+                    makeSpecial(0x1708, SPECIAL_SLL, 3, 0, 4, 2),
+                    makeSpecial(0x170C, SPECIAL_ADDU, 3, 3, 2, 0),
+                    makeLw(0x1710, 4, 3),
+                    makeJr(0x1714, 4),
+                    makeNop(0x1718),
+                    makeNop(0x1720),
+                    makeNop(0x1730),
+                };
+                CodeGenerator gen({}, {});
+                gen.setConfiguredJumpTables({configured});
+                CodeGenerator::AnalysisResult analysis = gen.collectInternalBranchTargets(func, insts);
+                t.IsTrue(analysis.jumpTableTargets.contains(0x1714u),
+                         "table base built in a different register than the LUI target should resolve");
+            }
+
+            {
+                // lui s4 (20) in the prologue, a call, then addiu v0, s4 / addu v1, v1, v0
+                Function func{};
+                func.name = "jr_table_base_hoisted";
+                func.start = 0x1700;
+                func.end = 0x1740;
+                func.isRecompiled = true;
+                Instruction jal{};
+                jal.address = 0x1704;
+                jal.opcode = OPCODE_JAL;
+                jal.target = 0x2000 >> 2;
+                jal.isCall = true;
+                jal.isJump = true;
+                jal.hasDelaySlot = true;
+                std::vector<Instruction> insts = {
+                    makeLui(0x1700, 20, hi),
+                    jal,
+                    makeNop(0x1708),
+                    makeAddiu(0x170C, 2, 20, lo),
+                    makeSpecial(0x1710, SPECIAL_SLL, 3, 0, 4, 2),
+                    makeSpecial(0x1714, SPECIAL_ADDU, 3, 3, 2, 0),
+                    makeLw(0x1718, 4, 3),
+                    makeJr(0x171C, 4),
+                    makeNop(0x1720),
+                    makeNop(0x1730),
+                };
+                CodeGenerator gen({}, {});
+                gen.setConfiguredJumpTables({configured});
+                CodeGenerator::AnalysisResult analysis = gen.collectInternalBranchTargets(func, insts);
+                t.IsTrue(analysis.jumpTableTargets.contains(0x171Cu),
+                         "table base hoisted into a callee-saved register across a call should resolve");
+            }
+        });
+
         tc.Run("unresolved JALR uses runtime dispatch without broad local switch", [](TestCase &t) {
             Function func;
             func.name = "jalr_runtime_fallback";

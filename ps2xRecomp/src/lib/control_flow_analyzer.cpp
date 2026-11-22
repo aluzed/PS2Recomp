@@ -9,6 +9,89 @@
 
 namespace ps2recomp
 {
+    namespace
+    {
+        bool isCalleeSavedGpr(uint32_t reg)
+        {
+            return (reg >= 16u && reg <= 23u) || reg == 28u || reg == 29u || reg == 30u;
+        }
+
+        bool isCallInstruction(const Instruction &inst)
+        {
+            if (inst.opcode == OPCODE_JAL)
+                return true;
+            if (inst.opcode == OPCODE_SPECIAL && inst.function == SPECIAL_JALR)
+                return true;
+            if (inst.opcode == OPCODE_REGIMM)
+            {
+                return inst.rt == REGIMM_BLTZAL || inst.rt == REGIMM_BGEZAL ||
+                       inst.rt == REGIMM_BLTZALL || inst.rt == REGIMM_BGEZALL;
+            }
+            return false;
+        }
+
+        // Conservative: returns true whenever the instruction may write `reg`.
+        bool mayWriteGpr(const Instruction &inst, uint32_t reg)
+        {
+            if (reg == 0u)
+                return false;
+            switch (inst.opcode)
+            {
+            case OPCODE_SPECIAL:
+            case OPCODE_MMI:
+                return inst.rd == reg;
+            case OPCODE_REGIMM:
+                return isCallInstruction(inst) && reg == 31u;
+            case 0x02: // J
+                return false;
+            case OPCODE_JAL:
+                return reg == 31u;
+            case OPCODE_CACHE:
+                return false;
+            default:
+                break;
+            }
+            if (inst.isBranch || inst.isStore)
+                return false;
+            return inst.rt == reg;
+        }
+
+        // Resolves a register to a constant built by LUI/ADDIU/ORI, walking back
+        // from `beforeIndex` to the start of the function. Table bases are often
+        // materialised in a different register than the LUI target, or hoisted
+        // into a callee-saved register in the prologue. Any write that is not
+        // understood, or a call that clobbers a caller-saved register, aborts.
+        bool resolveConstantGpr(const std::vector<Instruction> &instructions,
+                                int beforeIndex, uint32_t reg, uint32_t &value, int depth = 0)
+        {
+            if (reg == 0u || depth > 4)
+                return false;
+            for (int i = beforeIndex - 1; i >= 0; --i)
+            {
+                const auto &inst = instructions[i];
+                if (isCallInstruction(inst) && !isCalleeSavedGpr(reg))
+                    return false;
+                if (!mayWriteGpr(inst, reg))
+                    continue;
+                if (inst.opcode == OPCODE_LUI)
+                {
+                    value = inst.immediate << 16;
+                    return true;
+                }
+                if (inst.opcode == OPCODE_ADDIU || inst.opcode == OPCODE_ORI)
+                {
+                    uint32_t base = 0;
+                    if (!resolveConstantGpr(instructions, i, inst.rs, base, depth + 1))
+                        return false;
+                    value = inst.opcode == OPCODE_ADDIU ? base + inst.simmediate : (base | inst.immediate);
+                    return true;
+                }
+                return false;
+            }
+            return false;
+        }
+    }
+
     ControlFlowAnalyzer::ControlFlowAnalyzer(
         const std::vector<Section> &sections,
         const std::unordered_map<uint32_t, std::vector<uint32_t>> &configuredJumpTableTargetsByAddress,
@@ -244,34 +327,29 @@ namespace ps2recomp
 
                         if (adduIndex != -1)
                         {
-                            for (int i = adduIndex - 1; i >= 0 && i >= adduIndex - 20; --i)
+                            // Either ADDU operand may hold the table base; the other is
+                            // the scaled index. Keep the one that resolves to a constant
+                            // naming a configured table or lying in a loaded data section.
+                            for (uint32_t candidate : {tableBaseReg, indexReg})
                             {
-                                const auto &inst = instructions[i];
-                                if (inst.opcode == OPCODE_LUI)
+                                uint32_t base = 0;
+                                if (!resolveConstantGpr(instructions, adduIndex, candidate, base))
+                                    continue;
+                                const uint32_t address = base + static_cast<uint32_t>(lwOffset);
+                                const bool configured = m_configJumpTableTargetsByAddress.contains(address);
+                                const bool inData = std::any_of(m_sections.begin(), m_sections.end(),
+                                                                [&](const Section &sec)
+                                                                {
+                                                                    return sec.data && !sec.isCode &&
+                                                                           address >= sec.address &&
+                                                                           address < sec.address + sec.size;
+                                                                });
+                                if (configured || inData)
                                 {
-                                    if (inst.rt == tableBaseReg || inst.rt == indexReg)
-                                    {
-                                        uint32_t high = inst.immediate << 16;
-                                        uint32_t low = 0;
-                                        for (int j = i + 1; j < adduIndex; ++j)
-                                        {
-                                            const auto &lowInst = instructions[j];
-                                            if (lowInst.rs == inst.rt && lowInst.rt == inst.rt)
-                                            {
-                                                if (lowInst.opcode == OPCODE_ADDIU)
-                                                {
-                                                    low = (uint32_t)lowInst.simmediate;
-                                                }
-                                                else if (lowInst.opcode == OPCODE_ORI)
-                                                {
-                                                    low = lowInst.immediate;
-                                                }
-                                            }
-                                        }
-                                        tableAddress = high + low;
-                                        foundTableAddress = true;
-                                        break;
-                                    }
+                                    // tableAddress below adds lwOffset back.
+                                    tableAddress = base;
+                                    foundTableAddress = true;
+                                    break;
                                 }
                             }
                         }
