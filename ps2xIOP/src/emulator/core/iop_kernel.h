@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <vector>
 
 namespace ps2x::iop::detail
 {
@@ -93,6 +94,13 @@ namespace ps2x::iop::detail
 
         IopMemory &m_memory;
         std::map<int, IopThread> m_threads;
+        // Flat, id-ordered view of m_threads for the per-timeslice scheduler
+        // scans (map iteration dominated IOP time). Rebuilt only when a thread
+        // is created or destroyed; map nodes are stable so pointers stay valid.
+        std::vector<IopThread *> m_threadList;
+        bool m_threadListDirty = true;
+        bool m_hasDeadThreads = false;
+        const std::vector<IopThread *> &threadList();
         std::map<int, Semaphore> m_semaphores;
         std::map<int, EventFlag> m_eventFlags;
         uint32_t m_nextThreadId = 1;

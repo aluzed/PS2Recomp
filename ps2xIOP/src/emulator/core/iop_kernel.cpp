@@ -23,9 +23,24 @@ namespace ps2x::iop::detail
     {
     }
 
+    const std::vector<IopThread *> &IopKernel::threadList()
+    {
+        if (m_threadListDirty)
+        {
+            m_threadList.clear();
+            m_threadList.reserve(m_threads.size());
+            for (auto &[id, thread] : m_threads)
+                m_threadList.push_back(&thread);
+            m_threadListDirty = false;
+        }
+        return m_threadList;
+    }
+
     void IopKernel::reset()
     {
         m_threads.clear();
+        m_threadListDirty = true;
+        m_hasDeadThreads = false;
         m_semaphores.clear();
         m_eventFlags.clear();
         m_nextThreadId = 1;
@@ -62,6 +77,7 @@ namespace ps2x::iop::detail
             }
             const int id = thread.id;
             m_threads.emplace(id, std::move(thread));
+            m_threadListDirty = true;
             setV0(id);
             return true;
         }
@@ -77,6 +93,7 @@ namespace ps2x::iop::detail
             if (it->second.stackBase != 0u)
                 (void)m_memory.freeAllocation(it->second.stackBase);
             m_threads.erase(it);
+            m_threadListDirty = true;
             setV0(0);
             return true;
         }
@@ -107,6 +124,8 @@ namespace ps2x::iop::detail
             if (m_currentThread != nullptr)
             {
                 m_currentThread->state = ordinal == 9 ? IopThreadState::Dead : IopThreadState::Dormant;
+                if (ordinal == 9)
+                    m_hasDeadThreads = true;
                 cpu.stopped = true;
                 cpu.yielded = true;
             }
@@ -671,20 +690,17 @@ namespace ps2x::iop::detail
 
     IopThread *IopKernel::beginNextReady(uint64_t currentCycle)
     {
-        for (auto &[id, thread] : m_threads)
-        {
-            if (thread.state == IopThreadState::Delay && thread.wakeCycle <= currentCycle)
-                thread.state = IopThreadState::Ready;
-        }
-
+        // One pass: wake due delays and pick the highest-priority ready thread
+        // (lowest priority value, then lowest id; the list is id-ordered).
         IopThread *next = nullptr;
-        for (auto &[id, thread] : m_threads)
+        for (IopThread *thread : threadList())
         {
-            if (thread.state != IopThreadState::Ready)
+            if (thread->state == IopThreadState::Delay && thread->wakeCycle <= currentCycle)
+                thread->state = IopThreadState::Ready;
+            if (thread->state != IopThreadState::Ready)
                 continue;
-            if (next == nullptr || thread.priority < next->priority ||
-                (thread.priority == next->priority && thread.id < next->id))
-                next = &thread;
+            if (next == nullptr || thread->priority < next->priority)
+                next = thread;
         }
         if (next == nullptr)
             return nullptr;
@@ -699,6 +715,15 @@ namespace ps2x::iop::detail
     uint64_t IopKernel::nextWakeCycle(uint64_t fallback) const
     {
         uint64_t nextWake = fallback;
+        if (!m_threadListDirty)
+        {
+            for (const IopThread *thread : m_threadList)
+            {
+                if (thread->state == IopThreadState::Delay)
+                    nextWake = std::min(nextWake, thread->wakeCycle);
+            }
+            return nextWake;
+        }
         for (const auto &[id, thread] : m_threads)
         {
             if (thread.state == IopThreadState::Delay)
@@ -719,6 +744,10 @@ namespace ps2x::iop::detail
 
     void IopKernel::cleanupDeadThreads()
     {
+        if (!m_hasDeadThreads)
+            return;
+        m_hasDeadThreads = false;
+        m_threadListDirty = true;
         for (auto thread = m_threads.begin(); thread != m_threads.end();)
         {
             if (thread->second.state != IopThreadState::Dead)
@@ -738,7 +767,10 @@ namespace ps2x::iop::detail
         {
             const uint32_t pc = IopMemory::physicalAddress(thread.cpu.pc);
             if (pc >= base && pc < base + size)
+            {
                 thread.state = IopThreadState::Dead;
+                m_hasDeadThreads = true;
+            }
         }
     }
 }
