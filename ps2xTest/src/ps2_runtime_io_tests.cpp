@@ -168,6 +168,33 @@ void register_ps2_runtime_io_tests()
 {
     MiniTest::Case("PS2RuntimeIO", [](TestCase &tc)
     {
+        tc.Run("strchr and strstr return guest addresses for scratchpad strings", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            t.IsTrue(runtime.memory().initialize(), "runtime memory initialize should succeed");
+            uint8_t *rdram = runtime.memory().getRDRAM();
+
+            // Street Fighter EX3 keeps its pack directory names in the scratchpad.
+            constexpr uint32_t kScratchString = 0x70002808u;
+            uint8_t *host = getMemPtr(rdram, kScratchString);
+            t.IsTrue(host != nullptr, "scratchpad address should map to host memory");
+            std::memcpy(host, "tga/tga2.pac", 13);
+
+            R5900Context ctx{};
+            setRegU32(ctx, 4, kScratchString);
+            setRegU32(ctx, 5, static_cast<uint32_t>('/'));
+            ps2_stubs::strchr(rdram, &ctx, &runtime);
+            t.Equals(::getRegU32(&ctx, 2), kScratchString + 3u,
+                     "strchr should return the scratchpad address of the match");
+
+            constexpr uint32_t kNeedle = 0x00100000u;
+            std::memcpy(getMemPtr(rdram, kNeedle), "pac", 4);
+            setRegU32(ctx, 5, kNeedle);
+            ps2_stubs::strstr(rdram, &ctx, &runtime);
+            t.Equals(::getRegU32(&ctx, 2), kScratchString + 9u,
+                     "strstr should return the scratchpad address of the match");
+        });
+
         tc.Run("ROM0 ROMVER is exposed as the 14-byte firmware pseudo-file", [](TestCase &t)
         {
             TestContext test;

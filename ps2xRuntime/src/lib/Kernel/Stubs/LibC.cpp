@@ -453,7 +453,9 @@ namespace ps2_stubs
             foundPtr = ::strchr(const_cast<char *>(hostStr), char_code);
             if (foundPtr)
             {
-                resultAddr = hostPtrToPs2Addr(rdram, foundPtr);
+                // Offset from the guest address: the string may live outside
+                // main RAM (scratchpad), where hostPtrToPs2Addr fails.
+                resultAddr = strAddr + static_cast<uint32_t>(foundPtr - hostStr);
             }
         }
         else
@@ -476,10 +478,10 @@ namespace ps2_stubs
 
         if (hostStr)
         {
-            foundPtr = ::strrchr(const_cast<char *>(hostStr), char_code); // Use const_cast carefully
+            foundPtr = ::strrchr(const_cast<char *>(hostStr), char_code);
             if (foundPtr)
             {
-                resultAddr = hostPtrToPs2Addr(rdram, foundPtr);
+                resultAddr = strAddr + static_cast<uint32_t>(foundPtr - hostStr);
             }
         }
         else
@@ -506,7 +508,7 @@ namespace ps2_stubs
             foundPtr = ::strstr(const_cast<char *>(hostHaystack), hostNeedle);
             if (foundPtr)
             {
-                resultAddr = hostPtrToPs2Addr(rdram, foundPtr);
+                resultAddr = haystackAddr + static_cast<uint32_t>(foundPtr - hostHaystack);
             }
         }
         else
