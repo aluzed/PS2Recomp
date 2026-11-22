@@ -227,6 +227,10 @@ private:
     uint64_t m_cycle = 0;
     uint64_t m_nextWriteSequence = 0;
     uint64_t m_efuResourceReady = 0;
+    // Number of valid entries per pipeline array, so commitReadyPipelines()
+    // skips empty arrays instead of scanning ~50 slots every cycle.
+    uint32_t m_pendingFlag = 0, m_pendingEfu = 0, m_pendingStore = 0;
+    uint32_t m_pendingVf = 0, m_pendingVi = 0, m_pendingAcc = 0;
     uint32_t m_workingClip = 0;
     uint32_t m_currentUpperInstruction = 0;
     int32_t m_viBranchBackupValue = 0;
