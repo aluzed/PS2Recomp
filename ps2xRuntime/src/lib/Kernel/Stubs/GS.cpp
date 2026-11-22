@@ -772,14 +772,28 @@ namespace ps2_stubs
 
     void sceGsPutDrawEnv(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        uint32_t envAddr = getRegU32(ctx, 4);
-        GsRegPairMem pairs[8]{};
-        if (!readGsRegPairs(rdram, envAddr, pairs, 8u))
+        // libgraph takes a pointer to the GIFtag that precedes the env and
+        // DMAs NLOOP + 1 quadwords to the GIF. Envs built for both contexts
+        // (sceGsDrawEnv1 + sceGsDrawEnv2, optional clear) carry 16+ A+D
+        // pairs; reading a fixed 8 pairs from the tag address dropped the
+        // context-2 half and mistook the tag for a register write.
+        const uint32_t tagAddr = getRegU32(ctx, 4);
+        const uint8_t *tag = getConstMemPtr(rdram, tagAddr);
+        if (!tag || !runtime || !runtime->syncCoreSubsystems())
         {
             setReturnS32(ctx, -1);
             return;
         }
-        applyGsRegPairs(runtime, pairs, 8u);
+        uint64_t tagLo = 0u;
+        std::memcpy(&tagLo, tag, sizeof(tagLo));
+        const uint32_t nloop = static_cast<uint32_t>(tagLo & 0x7FFFu);
+        const uint32_t sizeBytes = (nloop + 1u) * 16u;
+        if (!getConstMemPtr(rdram, tagAddr + sizeBytes - 1u))
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
+        runtime->gs().processGIFPacket(tag, sizeBytes);
         setReturnS32(ctx, 0);
     }
 

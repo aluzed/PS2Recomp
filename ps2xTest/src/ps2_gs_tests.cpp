@@ -4213,6 +4213,33 @@ void register_ps2_gs_tests()
                                     "sceGsResetGraph should free its temporary GIF packet");
         });
 
+        tc.Run("sceGsPutDrawEnv sends the whole GIF packet including context 2", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            t.IsTrue(runtime.memory().initialize(), "runtime memory initialize should succeed");
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
+
+            // GIFtag (NLOOP=2, EOP, PACKED, NREG=1, REGS=A+D) + FRAME_1 + FRAME_2.
+            constexpr uint32_t kPacket = 0x00010000u;
+            const uint64_t qwords[6] = {
+                2ull | (1ull << 15) | (0ull << 58) | (1ull << 60), 0xEull,
+                0x020A0000ull, static_cast<uint64_t>(GS_REG_FRAME_1),
+                0x000A0028ull, static_cast<uint64_t>(GS_REG_FRAME_2),
+            };
+            std::memcpy(rdram.data() + kPacket, qwords, sizeof(qwords));
+
+            R5900Context ctx{};
+            setRegU32(ctx, 4, kPacket);
+            ps2_stubs::sceGsPutDrawEnv(rdram.data(), &ctx, &runtime);
+
+            t.Equals(static_cast<int32_t>(getRegU32Test(ctx, 2)), 0, "sceGsPutDrawEnv should succeed");
+            t.Equals(runtime.gs().getContextFrame(0).psm, static_cast<uint8_t>(GS_PSM_CT16),
+                     "FRAME_1 from the first A+D pair should be applied");
+            t.Equals(runtime.gs().getContextFrame(1).fbp, 0x28u,
+                     "FRAME_2 (second pair, context 2) should be applied too");
+            t.Equals(runtime.gs().getContextFrame(1).fbw, 10u, "FRAME_2 FBW should be applied");
+        });
+
         tc.Run("sceGsSetDefDispEnv fills PMODE, SMODE2 and BGCOLOR like libgraph", [](TestCase &t)
         {
             PS2Runtime runtime;
