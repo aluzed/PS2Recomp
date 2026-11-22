@@ -16,6 +16,10 @@ void register_ps2_iop_tests()
             t.Equals(ps2x::iop::ps2PathLeafKey(cd), std::string("libsd"),
                      "module lookup should use a normalized IRX leaf key");
 
+            const ps2x::iop::ParsedPs2Path padded = ps2x::iop::parsePs2Path("cdrom0:\\IOPCTRL.IRX;1 ");
+            t.Equals(padded.path, std::string("IOPCTRL.IRX"),
+                     "trailing whitespace after an ISO version suffix should be ignored on cdrom0");
+
             const ps2x::iop::ParsedPs2Path rom = ps2x::iop::parsePs2Path("rom0:ROMVER");
             t.Equals(rom.device, ps2x::iop::Ps2PathDevice::Rom0,
                      "ROM0 should remain a distinct virtual device");

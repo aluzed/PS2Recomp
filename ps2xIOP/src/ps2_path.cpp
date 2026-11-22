@@ -15,9 +15,17 @@ namespace ps2x::iop
             return result;
         }
 
-        void normalizeSuffix(std::string &suffix)
+        void normalizeSuffix(std::string &suffix, bool isoFilesystem)
         {
             std::replace(suffix.begin(), suffix.end(), '\\', '/');
+            // ISO9660 names cannot contain whitespace. Some retail games pass
+            // padded paths (Street Fighter EX3: "cdrom0:\\IOPCTRL.IRX;1 ") that
+            // the console's CD filesystem accepts.
+            if (isoFilesystem)
+            {
+                while (!suffix.empty() && std::isspace(static_cast<unsigned char>(suffix.back())))
+                    suffix.pop_back();
+            }
             while (!suffix.empty() && suffix.front() == '/')
                 suffix.erase(suffix.begin());
 
@@ -97,7 +105,7 @@ namespace ps2x::iop
 
         result.path.assign(value.substr(prefixLength));
         if (result.device != Ps2PathDevice::NativeHost)
-            normalizeSuffix(result.path);
+            normalizeSuffix(result.path, result.device == Ps2PathDevice::Cdrom);
         return result;
     }
 
