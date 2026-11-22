@@ -4135,6 +4135,38 @@ void register_ps2_gs_tests()
                                     "sceGsResetGraph should free its temporary GIF packet");
         });
 
+        tc.Run("sceGsSetDefDispEnv fills PMODE, SMODE2 and BGCOLOR like libgraph", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            t.IsTrue(runtime.memory().initialize(), "runtime memory initialize should succeed");
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
+
+            // Interlaced field mode, as set by sceGsResetGraph(0, 1, 2, 1).
+            R5900Context resetCtx{};
+            setRegU32(resetCtx, 4, 0u);
+            setRegU32(resetCtx, 5, 1u);
+            setRegU32(resetCtx, 6, 2u);
+            setRegU32(resetCtx, 7, 1u);
+            ps2_stubs::sceGsResetGraph(rdram.data(), &resetCtx, &runtime);
+
+            constexpr uint32_t kEnv = 0x00010000u;
+            std::memset(rdram.data() + kEnv, 0xA5, 40u); // stale guest data
+            R5900Context ctx{};
+            setRegU32(ctx, 4, kEnv);
+            setRegU32(ctx, 5, 2u);   // PSMCT16
+            setRegU32(ctx, 6, 640u);
+            setRegU32(ctx, 7, 448u);
+            ps2_stubs::sceGsSetDefDispEnv(rdram.data(), &ctx, &runtime);
+
+            uint64_t env[5]{};
+            std::memcpy(env, rdram.data() + kEnv, sizeof(env));
+            t.Equals(env[0], static_cast<uint64_t>(0x66u), "PMODE should enable CRT2 with MMOD/AMOD (0x66)");
+            t.Equals(env[1], static_cast<uint64_t>(3u), "SMODE2 should be interlaced field mode");
+            t.Equals((env[2] >> 15) & 0x1Fu, static_cast<uint64_t>(2u), "DISPFB should carry the requested PSM");
+            t.Equals((env[2] >> 9) & 0x3Fu, static_cast<uint64_t>(10u), "DISPFB FBW should be 640/64");
+            t.Equals(env[4], static_cast<uint64_t>(0u), "BGCOLOR should be cleared");
+        });
+
         tc.Run("sceGsSyncV resumes through the scheduler with deterministic field parity", [](TestCase &t)
         {
             PS2Runtime runtime;

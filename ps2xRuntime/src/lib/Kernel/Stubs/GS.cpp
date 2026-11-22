@@ -1015,7 +1015,24 @@ namespace ps2_stubs
         uint64_t dispfb = makeDispFb(0, fbw, psm, 0, 0);
         uint64_t display = makeDisplay(dx, dy, 0, 0, w - 1, h - 1);
 
+        // libgraph fills the whole sceGsDispEnv, not only DISPFB/DISPLAY:
+        // PMODE = EN2 | CRTMD=1 | MMOD | AMOD (0x66), SMODE2 from the current
+        // GParam (3 = interlaced field, 1 = interlaced frame, 2 = progressive)
+        // and BGCOLOR = 0. Leaving PMODE untouched kept both CRTs disabled for
+        // games that build their env with this call (e.g. Street Fighter EX3).
+        uint64_t smode2 = 2u;
+        if (g_gparam.interlace & 0x1u)
+            smode2 = (g_gparam.ffmode & 0x1u) ? 3u : 1u;
         writeGsDispEnv(rdram, envAddr, display, dispfb);
+        if (uint8_t *ptr = getMemPtr(rdram, envAddr))
+        {
+            GsDispEnvMem env{};
+            std::memcpy(&env, ptr, sizeof(env));
+            env.pmode = 0x66u;
+            env.smode2 = smode2;
+            env.bgcolor = 0u;
+            std::memcpy(ptr, &env, sizeof(env));
+        }
         setReturnS32(ctx, 0);
     }
 
