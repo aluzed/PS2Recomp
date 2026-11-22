@@ -22,7 +22,12 @@ namespace ps2x::iop::detail
         static constexpr uint32_t Spu2End = 0x1FA00000u;
         static constexpr uint32_t SifBase = 0x1D000000u;
         static constexpr uint32_t SifEnd = 0x1D001000u;
-        static constexpr uint32_t HeapBase = 0x00120000u;
+        // One sysmem arena, like the console: relocatable IRX images and
+        // AllocSysMemory blocks share it. A separate fixed heap at 0x120000
+        // left ~800 KiB between the last module and the heap unusable, and
+        // games that allocate large IOP buffers (Street Fighter EX3's file
+        // driver asks for 0xC0040 bytes) failed with a null pointer.
+        static constexpr uint32_t HeapBase = 0x00010000u;
         static constexpr uint32_t HeapLimit = 0x001F0000u;
 
         struct Allocation
