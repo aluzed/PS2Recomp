@@ -212,6 +212,20 @@ struct GSRegisters
     uint64_t siglblid; // Signal label ID
 };
 static_assert(sizeof(GSRegisters) == (20u * sizeof(uint64_t)), "GSRegisters layout changed unexpectedly");
+
+// SMODE1 as programmed by the BIOS (SetGsCrt) for analog video modes:
+// videoMode 2 = NTSC, 3 = PAL (sceGsResetGraph OMODE). 0x740834504 is the
+// NTSC value (RC=4, LC=32, CMOD=2); PAL only differs in CMOD=3. Other modes
+// (VESA/HDTV) return 0 and leave SMODE1 untouched.
+inline uint64_t gsBiosSmode1ForVideoMode(uint32_t videoMode)
+{
+    constexpr uint64_t kNtsc = 0x740834504ull;
+    if (videoMode == 2u)
+        return kNtsc;
+    if (videoMode == 3u)
+        return (kNtsc & ~(3ull << 13)) | (3ull << 13);
+    return 0ull;
+}
 static_assert(alignof(GSRegisters) == alignof(uint64_t), "GSRegisters alignment must remain 64-bit");
 static_assert(std::atomic<uint64_t>::is_always_lock_free, "GS CSR atomic must be lock-free on all supported targets");
 

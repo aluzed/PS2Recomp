@@ -816,6 +816,12 @@ namespace ps2_stubs
             g_gparam.omode = static_cast<uint8_t>(omode & 0xFF);
             g_gparam.ffmode = static_cast<uint8_t>(ffmode & 0x1);
             writeGsGParamToScratch(runtime);
+            // libgraph calls SetGsCrt here, which programs SMODE1 for the video mode.
+            if (runtime)
+            {
+                if (const uint64_t smode1 = gsBiosSmode1ForVideoMode(omode & 0xFFu))
+                    runtime->memory().gs().smode1 = smode1;
+            }
             uint64_t pmode = makePmode(1, 0, 0, 0, 0, 0x80);
             uint64_t smode2 = (interlace & 0x1) | ((ffmode & 0x1) << 1);
             uint64_t dispfb = makeDispFb(0, 10, 0, 0, 0);
@@ -1027,7 +1033,26 @@ namespace ps2_stubs
 
         uint32_t fbw = (w + 63) / 64;
         uint64_t dispfb = makeDispFb(0, fbw, psm, 0, 0);
-        uint64_t display = makeDisplay(dx, dy, 0, 0, w - 1, h - 1);
+        // DISPLAY as libgraph computes it: horizontal values are in video
+        // clock units (MAGH + 1 per pixel), offsets are the CRT start of the
+        // visible area, and in field mode DH counts frame lines.
+        uint64_t display = 0u;
+        const bool interlace = (g_gparam.interlace & 0x1u) != 0u;
+        const bool fieldMode = (g_gparam.ffmode & 0x1u) != 0u;
+        const uint32_t clocksPerPixel = (2559u + w) / w; // MAGH + 1
+        const uint32_t dh = (interlace && fieldMode) ? (h * 2u - 1u) : (h - 1u);
+        if (g_gparam.omode == 2u || g_gparam.omode == 3u)
+        {
+            const bool pal = g_gparam.omode == 3u;
+            const uint32_t baseX = pal ? 656u : 636u;
+            const uint32_t baseY = pal ? (interlace ? 72u : 36u) : (interlace ? 50u : 25u);
+            display = makeDisplay(baseX + dx * clocksPerPixel, baseY + dy, clocksPerPixel - 1u, 0u,
+                                  clocksPerPixel * w - 1u, dh);
+        }
+        else
+        {
+            display = makeDisplay(dx, dy, 0, 0, w - 1, h - 1);
+        }
 
         // libgraph fills the whole sceGsDispEnv, not only DISPFB/DISPLAY:
         // PMODE = EN2 | CRTMD=1 | MMOD | AMOD (0x66), SMODE2 from the current

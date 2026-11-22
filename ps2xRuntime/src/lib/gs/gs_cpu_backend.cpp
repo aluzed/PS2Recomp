@@ -1876,6 +1876,16 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
     decodeDisplaySize(request.display1, width1, height1);
     decodeDisplaySize(request.display2, width2, height2);
+    // Interlaced with SMODE2.FFMD = 1 (field rendering, `frameMode` here is
+    // the raw FFMD bit): DISPLAY.DH counts frame lines and each field reads
+    // half of them from the frame buffer (same as PCSX2).
+    if (smode2.interlaced && smode2.frameMode)
+    {
+        if (height1 > 256u)
+            height1 = (height1 + 1u) / 2u;
+        if (height2 > 256u)
+            height2 = (height2 + 1u) / 2u;
+    }
     const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
     const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
     if (!valid1 && !valid2)

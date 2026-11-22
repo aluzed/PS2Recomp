@@ -17,6 +17,8 @@ namespace ps2_syscalls
                 ((static_cast<uint64_t>(frameMode) & 0x1ull) << 1);
 
             gs.smode2 = smode2;
+            if (const uint64_t smode1 = gsBiosSmode1ForVideoMode(static_cast<uint32_t>(videoMode)))
+                gs.smode1 = smode1;
 
             // Keep CRT1 enabled after the BIOS syscall selects a display mode.
             if ((gs.pmode & 0x3ull) == 0ull)

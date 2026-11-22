@@ -4411,6 +4411,12 @@ void register_ps2_gs_tests()
             t.Equals((env[2] >> 15) & 0x1Fu, static_cast<uint64_t>(2u), "DISPFB should carry the requested PSM");
             t.Equals((env[2] >> 9) & 0x3Fu, static_cast<uint64_t>(10u), "DISPFB FBW should be 640/64");
             t.Equals(env[4], static_cast<uint64_t>(0u), "BGCOLOR should be cleared");
+            // DISPLAY like libgraph for NTSC interlaced field mode, 640x448 request.
+            t.Equals(env[3] & 0xFFFu, static_cast<uint64_t>(636u), "DISPLAY.DX should start at the NTSC visible area");
+            t.Equals((env[3] >> 12) & 0x7FFu, static_cast<uint64_t>(50u), "DISPLAY.DY should be 50 for interlaced NTSC");
+            t.Equals((env[3] >> 23) & 0xFu, static_cast<uint64_t>(3u), "DISPLAY.MAGH should be 2560/640 - 1");
+            t.Equals((env[3] >> 32) & 0xFFFu, static_cast<uint64_t>(2559u), "DISPLAY.DW is in video clocks");
+            t.Equals((env[3] >> 44) & 0x7FFu, static_cast<uint64_t>(895u), "DISPLAY.DH counts frame lines in field mode (2h-1)");
         });
 
         tc.Run("sceGsSyncV resumes through the scheduler with deterministic field parity", [](TestCase &t)
