@@ -2206,7 +2206,7 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
         return;
     }
 
-    if (IsKeyPressed(KEY_F1))
+    if (IsKeyPressed(static_cast<KeyboardKey>(PS2X_DEBUG_UI_TOGGLE_KEY)))
     {
         toggleVisible();
     }
