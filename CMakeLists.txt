@@ -79,6 +79,13 @@ if(PS2X_IS_ARM_TARGET)
     endif()
 endif()
 
+# The runtime uses SSE4.1 intrinsics unconditionally. MSVC accepts them without
+# flags (and Release adds /arch:AVX2); GCC/Clang need the ISA level enabled.
+set(PS2X_X86_MARCH "x86-64-v2" CACHE STRING "-march level for x86-64 GCC/Clang builds (x86-64-v2 = SSE4.2)")
+if(NOT PS2X_IS_ARM_TARGET AND NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    add_compile_options(-march=${PS2X_X86_MARCH})
+endif()
+
 if(PS2X_BUILD_RECOMP)
     add_subdirectory("ps2xRecomp")
 endif()
