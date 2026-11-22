@@ -120,6 +120,7 @@ void GS::init(uint8_t *vram, uint32_t vramSize, GSRegisters *privRegs)
         m_backend = std::make_unique<GSCpuBackend>();
     m_backend->Initialize(vram, vramSize);
     reset();
+    m_dumpRecorder.startFromEnvironment(vram, vramSize);
 }
 
 void GS::reset()
@@ -538,6 +539,7 @@ void GS::latchHostPresentationFrame()
             return;
         }
         request = buildPresentationRequestUnlocked();
+        m_dumpRecorder.recordVsync(*m_privRegs, static_cast<uint32_t>(request.vsyncTick & 1ull));
     }
 
     PresentationFrame frame{};
@@ -547,6 +549,7 @@ void GS::latchHostPresentationFrame()
         {
             m_backend->Flush();
             m_backend->Sync(GSSyncReason::Presentation);
+            m_dumpRecorder.snapshotVramIfRequested(m_localMemoryStorage, m_localMemorySize);
             frame = m_backend->Present(request);
         }
     }
@@ -643,6 +646,7 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (!data || sizeBytes < 16 || !m_backend)
         return;
+    m_dumpRecorder.recordTransfer(3u, data, sizeBytes);
 
     if (tryProcessNativeImageUploadPacket(data, sizeBytes))
         return;
@@ -785,6 +789,7 @@ void GS::uploadImageNative(uint64_t bitbltbuf,
                            uint32_t sizeBytes)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    m_dumpRecorder.recordImageUpload(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
     uploadImageNativeUnlocked(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
 }
 
@@ -1063,6 +1068,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
 void GS::writeRegister(uint8_t regAddr, uint64_t value)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    m_dumpRecorder.recordRegister(regAddr, value);
     writeRegisterUnlocked(regAddr, value);
 }
 

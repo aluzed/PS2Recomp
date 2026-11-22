@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "runtime/gs/gs_backend.h"
+#include "runtime/gs/gs_dump_recorder.h"
 
 struct GSDebugSnapshot
 {
@@ -180,6 +181,7 @@ private:
     uint8_t *m_localMemoryStorage = nullptr;
     uint32_t m_localMemorySize = 0u;
     struct GSRegisters *m_privRegs = nullptr;
+    GSDumpRecorder m_dumpRecorder;
     mutable std::recursive_mutex m_stateMutex;
     mutable std::mutex m_backendLifetimeMutex;
     mutable std::mutex m_presentationMutex;
