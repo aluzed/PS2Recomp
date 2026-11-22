@@ -909,9 +909,14 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
         return;
     }
 
+    // TEST.ZTE = 0 is formally undefined; hardware behaviour (and paraLLEl-GS,
+    // PCSX2) is to ignore depth entirely: every pixel passes and Z is not
+    // written. Applying ZTST anyway rejected every pixel when ZTST was 0
+    // (NEVER), e.g. Street Fighter EX3's TEST=0 framebuffer copies.
+    const bool depthTestEnabled = ((ctx.test >> 16) & 1u) != 0u;
     bool zpass = false;
     uint32_t storedZ = 0u;
-    switch (ztestMethod)
+    switch (depthTestEnabled ? ztestMethod : 1u)
     {
     case 0:
         zpass = false;
@@ -1006,7 +1011,7 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
         WriteVramUnlocked(fpsm, fbp, fbw, x, y, pixel);
     }
 
-    if (writeMask.writeDepth && !ctx.zbuf.zmask)
+    if (writeMask.writeDepth && !ctx.zbuf.zmask && depthTestEnabled)
     {
         WriteVramUnlocked(zpsm, zbp, fbw, x, y, z);
     }

@@ -1231,6 +1231,80 @@ void register_ps2_gs_tests()
             t.Equals(mismatches, 0u, "first mismatch at " + std::to_string(firstX) + "," + std::to_string(firstY));
         });
 
+        tc.Run("TEST.ZTE=0 ignores depth: CT32 to CT16 copy with TEST=0 draws every pixel", [](TestCase &t)
+        {
+            std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
+            GS gs;
+            gs.init(vram.data(), static_cast<uint32_t>(vram.size()), nullptr);
+
+            constexpr uint32_t kSrcFbp = 0x28u;
+            constexpr uint32_t kDstFbp = 0x78u;
+            constexpr uint32_t kW = 640u;
+            constexpr uint32_t kH = 224u;
+            auto pattern = [](uint32_t x, uint32_t y) -> uint32_t
+            {
+                // Distinct 5-bit-exact channels so CT16 truncation is lossless.
+                const uint32_t r = (x & 31u) << 3;
+                const uint32_t g = ((x >> 5) & 31u) << 3;
+                const uint32_t b = (y & 31u) << 3;
+                return 0x80000000u | (b << 16) | (g << 8) | r;
+            };
+            for (uint32_t y = 0u; y < kH; ++y)
+                for (uint32_t x = 0u; x < kW; ++x)
+                    gs.WriteVram(GS_PSM_CT32, kSrcFbp * 32u, 10u, x, y, pattern(x, y));
+            gs.writeRegister(GS_REG_TEXFLUSH, 0ull);
+
+            gs.writeRegister(GS_REG_FRAME_1, static_cast<uint64_t>(kDstFbp) | (10ull << 16) |
+                                                  (static_cast<uint64_t>(GS_PSM_CT16) << 24));
+            gs.writeRegister(GS_REG_ZBUF_1, (1ull << 32));
+            gs.writeRegister(GS_REG_SCISSOR_1, 0xDF0000027F0000ull);
+            gs.writeRegister(GS_REG_XYOFFSET_1, 0x790000006C00ull);
+            gs.writeRegister(GS_REG_TEST_1, 0ull);
+            gs.writeRegister(GS_REG_ALPHA_1, 0ull);
+            gs.writeRegister(GS_REG_TEX1_1, 0ull);
+            gs.writeRegister(GS_REG_CLAMP_1, 5ull);
+            gs.writeRegister(GS_REG_DTHE, 1ull);
+            gs.writeRegister(GS_REG_DIMX, 0x6200173500623517ull);
+            gs.writeRegister(GS_REG_COLCLAMP, 1ull);
+            const uint64_t tex0 = static_cast<uint64_t>(kSrcFbp * 32u) | (10ull << 14) |
+                                  (static_cast<uint64_t>(GS_PSM_CT32) << 20) | (10ull << 26) | (8ull << 30) |
+                                  (1ull << 34) | (1ull << 35); // TCC, DECAL
+            gs.writeRegister(GS_REG_TEX0_1, tex0);
+            gs.writeRegister(GS_REG_PRIM, static_cast<uint64_t>(GS_PRIM_SPRITE) | (1ull << 4) | (1ull << 8));
+            gs.writeRegister(GS_REG_RGBAQ, 0x80808080ull);
+            // Values captured from the game: UV (0,0.5)-(640,224.5), XYZ (1728,1936)-(2368,2160).
+            gs.writeRegister(GS_REG_UV, (0ull) | (8ull << 16));
+            gs.writeRegister(GS_REG_XYZ2, (1728ull * 16u) | ((1936ull * 16u) << 16));
+            gs.writeRegister(GS_REG_UV, (10240ull) | (3592ull << 16));
+            gs.writeRegister(GS_REG_XYZ2, (2368ull * 16u) | ((2160ull * 16u) << 16));
+
+            uint32_t mismatches = 0u;
+            uint32_t firstX = 0u, firstY = 0u;
+            for (uint32_t y = 0u; y < kH; ++y)
+                for (uint32_t x = 0u; x < kW; ++x)
+                {
+                    const uint32_t c = pattern(x, y);
+                    const uint32_t expected = ((c >> 3) & 31u) | (((c >> 11) & 31u) << 5) |
+                                              (((c >> 19) & 31u) << 10) | ((c >> 31) << 15);
+                    const uint32_t got = gs.ReadVram(GS_PSM_CT16, kDstFbp * 32u, 10u, x, y) & 0xFFFFu;
+                    auto close = [](uint32_t a, uint32_t b) {
+                        for (int shift : {0, 5, 10})
+                        {
+                            const int da = static_cast<int>((a >> shift) & 31u) - static_cast<int>((b >> shift) & 31u);
+                            if (da < -1 || da > 1)
+                                return false;
+                        }
+                        return true;
+                    };
+                    if (!close(got, expected) && mismatches++ == 0u)
+                    {
+                        firstX = x;
+                        firstY = y;
+                    }
+                }
+            t.Equals(mismatches, 0u, "first mismatch at " + std::to_string(firstX) + "," + std::to_string(firstY));
+        });
+
         tc.Run("fullscreen display copy tracks the preferred presentation source frame", [](TestCase &t)
         {
             std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
