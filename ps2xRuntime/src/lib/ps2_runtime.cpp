@@ -2430,9 +2430,19 @@ void PS2Runtime::run()
         const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
         const float screenWidth = static_cast<float>(GetScreenWidth());
         const float screenHeight = static_cast<float>(GetScreenHeight());
-        const float scale = std::min(screenWidth / srcWidth, screenHeight / srcHeight);
-        const float dstWidth = srcWidth * scale;
-        const float dstHeight = srcHeight * scale;
+        // The PS2 always outputs a 4:3 picture, whatever the internal display
+        // height: 224-line fields (interlaced field mode), 448-line frames or
+        // 512-line PAL frames all fill the screen. Fit a 4:3 rectangle and
+        // stretch the source into it instead of drawing it at its pixel size
+        // (which showed field-mode games in the middle half of the window).
+        constexpr float kDisplayAspect = 4.0f / 3.0f;
+        float dstWidth = screenWidth;
+        float dstHeight = screenWidth / kDisplayAspect;
+        if (dstHeight > screenHeight)
+        {
+            dstHeight = screenHeight;
+            dstWidth = screenHeight * kDisplayAspect;
+        }
         const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
         const Rectangle dstRect{
             (screenWidth - dstWidth) * 0.5f,
