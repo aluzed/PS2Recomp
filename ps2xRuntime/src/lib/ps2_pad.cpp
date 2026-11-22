@@ -25,7 +25,7 @@ namespace
     constexpr uint16_t PAD_L2 = 0x0100u;
 }
 
-bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
+bool PSPadBackend::readState(int port, int slot, uint8_t *data, size_t size)
 {
     if (!data || size < 32)
         return false;
@@ -121,5 +121,7 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
 
     data[2] = static_cast<uint8_t>(btns & 0xFF);
     data[3] = static_cast<uint8_t>(btns >> 8);
+    if (m_readHook)
+        m_readHook(port, slot, data, m_readHookUser);
     return true;
 }
