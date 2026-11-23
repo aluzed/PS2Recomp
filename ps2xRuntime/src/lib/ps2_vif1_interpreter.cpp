@@ -159,6 +159,15 @@ namespace
                     in[0] = in[2] = element(src, 0);
                     in[1] = in[3] = element(src, 1);
                 }
+                else if constexpr (vl == 0u)
+                {
+                    // V3-32/V4-32: one copy when the four words are in range.
+                    if (src + 16u <= dataBytes)
+                        std::memcpy(in, data + src, 16);
+                    else
+                        for (uint32_t c = 0; c < 4u; ++c)
+                            in[c] = element(src, c);
+                }
                 else
                 {
                     for (uint32_t c = 0; c < 4u; ++c)
