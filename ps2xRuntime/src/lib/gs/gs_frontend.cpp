@@ -1672,6 +1672,7 @@ void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
 
 bool GS::clearFramebufferContext(uint32_t contextIndex, uint32_t rgba)
 {
+    beforeDirectInput();
     waitIdle(); // depends on everything submitted so far (threaded GS)
 
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
@@ -1686,6 +1687,7 @@ bool GS::clearActiveFramebuffer(uint32_t rgba)
 
 uint32_t GS::consumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
 {
+    beforeDirectInput();
     waitIdle(); // depends on everything submitted so far (threaded GS)
 
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
@@ -1895,6 +1897,7 @@ void GS::workerLoop()
 
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
+    beforeDirectInput();
     if (m_threaded.load(std::memory_order_acquire) && data && sizeBytes >= 16u &&
         std::this_thread::get_id() != m_workerId)
     {
@@ -1916,6 +1919,7 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 
 void GS::writeRegister(uint8_t regAddr, uint64_t value)
 {
+    beforeDirectInput();
     QueuedCommand command;
     command.isPacket = false;
     command.reg = regAddr;

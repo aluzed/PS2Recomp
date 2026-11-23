@@ -376,7 +376,8 @@ public:
     // its VU1 state to that thread). Off by default.
     void setVif1Threaded(bool enabled, std::function<void()> onWorkerStart = {});
     // Waits until every VIF1 transfer submitted before this call is processed.
-    void waitVif1Idle() const;
+    // `reason`: the address that needed it (diagnostics, PS2X_SYNC_STATS).
+    void waitVif1Idle(uint32_t reason = 0) const;
     bool onVif1Thread() const { return std::this_thread::get_id() == m_vif1WorkerId; }
     void processPendingTransfers();
     std::vector<uint32_t> consumeCompletedDmacCauses();
@@ -425,7 +426,23 @@ public:
     mutable std::mutex m_vif1QueueMutex;
     mutable std::condition_variable m_vif1QueueCv;
     mutable std::condition_variable m_vif1IdleCv;
-    std::deque<std::vector<uint8_t>> m_vif1Queue;
+    // VIF1 data, or a GIF packet / arbiter drain submitted by another thread:
+    // all GIF input goes through the VU thread, in submission order.
+    struct Vif1QueueItem
+    {
+        enum class Kind : uint8_t
+        {
+            Vif1Data,
+            GifPacket,
+            GifDrain,
+        } kind = Kind::Vif1Data;
+        std::vector<uint8_t> data;
+        GifPathId path = GifPathId::Path3;
+        bool drainImmediately = false;
+        bool path2DirectHl = false;
+    };
+    void enqueueVif1Item(Vif1QueueItem &&item);
+    std::deque<Vif1QueueItem> m_vif1Queue;
     std::vector<std::vector<uint8_t>> m_vif1FreeBuffers;
     size_t m_vif1QueuedBytes = 0;
     uint64_t m_vif1Submitted = 0;

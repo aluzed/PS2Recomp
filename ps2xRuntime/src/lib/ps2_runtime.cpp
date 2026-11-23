@@ -2435,6 +2435,9 @@ void PS2Runtime::run()
         const char *mtgs = std::getenv("PS2X_MTGS");
         const bool threaded = !(mtgs && mtgs[0] == '0');
         m_gs.setThreaded(threaded);
+        // HLE GS calls on the game thread go after the GIF input queued on the VU thread.
+        m_gs.setBeforeDirectInput([this]
+                                  { m_memory.waitVif1Idle(); });
         std::cerr << "[gs] " << (threaded ? "threaded GS (MTGS)" : "GS on the game thread") << std::endl;
     }
     UnloadImage(blank);

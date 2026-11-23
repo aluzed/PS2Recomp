@@ -634,7 +634,7 @@ uint8_t *PS2Memory::mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t &offs
 const uint8_t *PS2Memory::mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t &offset, uint32_t &limit) const
 {
     if (physAddr >= PS2_VU1_CODE_BASE && physAddr < PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE)
-        waitVif1Idle(); // VU1 memory belongs to the VU thread while it runs
+        waitVif1Idle(physAddr); // VU1 memory belongs to the VU thread while it runs
     auto mapRange = [&](uint32_t base, uint32_t rangeSize, const uint8_t *ptr) -> const uint8_t *
     {
         if (!ptr || physAddr < base)
@@ -1226,7 +1226,7 @@ void PS2Memory::write128(uint32_t address, __m128i value)
 bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 {
     if (address >= 0x10003C00u && address < 0x10004000u)
-        waitVif1Idle(); // VIF1 registers belong to the VU thread while it runs
+        waitVif1Idle(address); // VIF1 registers belong to the VU thread while it runs
     const bool timerOrGifStat = (address >= 0x10000000u && address < 0x10002000u) || address == 0x10003020u;
     if (timerOrGifStat)
     {
@@ -1971,8 +1971,17 @@ void PS2Memory::processPendingTransfers()
 
     if (m_gifArbiter)
     {
-        std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
-        m_gifArbiter->drain();
+        if (m_vif1Threaded.load(std::memory_order_acquire) && !onVif1Thread())
+        {
+            Vif1QueueItem item;
+            item.kind = Vif1QueueItem::Kind::GifDrain;
+            enqueueVif1Item(std::move(item));
+        }
+        else
+        {
+            std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
+            m_gifArbiter->drain();
+        }
     }
 
     static constexpr uint32_t GIF_CHANNEL = 0x1000A000;
@@ -2059,9 +2068,21 @@ void PS2Memory::flushMaskedPath3Packets(bool drainImmediately)
 
 void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl)
 {
-    std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     if (!data || sizeBytes < 16)
         return;
+    if (m_vif1Threaded.load(std::memory_order_acquire) && !onVif1Thread())
+    {
+        // Keep GIF input in order with the VU thread's PATH1/PATH2 output.
+        Vif1QueueItem item;
+        item.kind = Vif1QueueItem::Kind::GifPacket;
+        item.data.assign(data, data + sizeBytes);
+        item.path = pathId;
+        item.drainImmediately = drainImmediately;
+        item.path2DirectHl = path2DirectHl;
+        enqueueVif1Item(std::move(item));
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
 
     if (pathId == GifPathId::Path3)
     {
@@ -2084,6 +2105,7 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
 
 void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
 {
+    waitVif1Idle(); // writes the GS directly: after the queued GIF input
     std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     if (!m_rdram || qwCount == 0)
         return;
@@ -2111,6 +2133,7 @@ void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
 
 void PS2Memory::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
+    waitVif1Idle(); // writes the GS directly: after the queued GIF input
     std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     if (m_gifArbiter)
         submitGifPacket(GifPathId::Path3, data, sizeBytes);
@@ -2120,6 +2143,7 @@ void PS2Memory::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 
 bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint32_t chcr)
 {
+    waitVif1Idle(); // writes the GS directly: after the queued GIF input
     std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     static constexpr uint32_t GIF_CHANNEL = 0x1000A000u;
     static constexpr uint32_t D_STAT = 0x1000E010u;
@@ -2313,6 +2337,7 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
 
 bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t chcr)
 {
+    waitVif1Idle(); // writes the GS directly: after the queued GIF input
     std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     static constexpr uint32_t GIF_CHANNEL = 0x1000A000u;
     static constexpr uint32_t D_STAT = 0x1000E010u;
@@ -2399,8 +2424,12 @@ int PS2Memory::pollDmaRegisters()
 
 uint32_t PS2Memory::readIORegister(uint32_t address)
 {
-    if (address >= 0x10003C00u && address < 0x10004000u)
-        waitVif1Idle(); // VIF1 registers belong to the VU thread while it runs
+    // VIF1_STAT is polled before every draw unit (sceGsSyncPath): data handed
+    // to the VU thread is already copied and kept in order with all GIF input,
+    // so the VIF is free from the EE's point of view and STAT needs no wait.
+    // The other VIF1 registers belong to the VU thread while it runs.
+    if (address > 0x10003C00u && address < 0x10004000u)
+        waitVif1Idle(address);
     if ((address >= 0x10000000u && address < 0x10002000u) || address == 0x10003020u)
         flushEeTimers();
     size_t timerIndex = 0u;

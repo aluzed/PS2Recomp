@@ -1,5 +1,8 @@
 // Based on Blackline Interactive implementation
 #include <algorithm>
+#include <atomic>
+#include <iostream>
+#include <chrono>
 #include <utility>
 #include <array>
 #include <cstdlib>
@@ -1016,23 +1019,30 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         processVIF1DataNow(data, sizeBytes);
         return;
     }
+    Vif1QueueItem item;
+    item.kind = Vif1QueueItem::Kind::Vif1Data;
     // Copy now: the game reuses its DMA buffers once the transfer is done.
-    std::vector<uint8_t> buffer;
+    item.data.assign(data, data + sizeBytes);
+    enqueueVif1Item(std::move(item));
+}
+
+void PS2Memory::enqueueVif1Item(Vif1QueueItem &&item)
+{
     {
         std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
-        if (!m_vif1FreeBuffers.empty())
+        if (!m_vif1FreeBuffers.empty() && item.data.capacity() == 0u)
         {
-            buffer = std::move(m_vif1FreeBuffers.back());
+            item.data = std::move(m_vif1FreeBuffers.back());
             m_vif1FreeBuffers.pop_back();
         }
     }
-    buffer.assign(data, data + sizeBytes);
+    const size_t bytes = item.data.size() + 16u;
     constexpr size_t kMaxQueuedBytes = 16u * 1024u * 1024u;
     std::unique_lock<std::mutex> lock(m_vif1QueueMutex);
     m_vif1IdleCv.wait(lock, [&]
                       { return m_vif1QueuedBytes < kMaxQueuedBytes || m_vif1WorkerStop; });
-    m_vif1QueuedBytes += sizeBytes;
-    m_vif1Queue.push_back(std::move(buffer));
+    m_vif1QueuedBytes += bytes;
+    m_vif1Queue.push_back(std::move(item));
     ++m_vif1Submitted;
     lock.unlock();
     m_vif1QueueCv.notify_one();
@@ -1066,14 +1076,52 @@ void PS2Memory::setVif1Threaded(bool enabled, std::function<void()> onWorkerStar
     m_vif1WorkerId = std::thread::id{};
 }
 
-void PS2Memory::waitVif1Idle() const
+namespace
+{
+    // PS2X_SYNC_STATS=1: how often and how long the EE waits for the VU thread.
+    struct SyncStats
+    {
+        bool enabled = []
+        {
+            const char *v = std::getenv("PS2X_SYNC_STATS");
+            return v && *v && *v != '0';
+        }();
+        std::atomic<uint64_t> calls{0}, waits{0}, waitNs{0};
+        std::atomic<int64_t> lastReport{0};
+    };
+    SyncStats g_vif1Sync;
+}
+
+void PS2Memory::waitVif1Idle(uint32_t reason) const
 {
     if (!m_vif1Threaded.load(std::memory_order_acquire) || onVif1Thread())
         return;
-    std::unique_lock<std::mutex> lock(m_vif1QueueMutex);
-    const uint64_t target = m_vif1Submitted;
-    m_vif1IdleCv.wait(lock, [&]
-                      { return m_vif1Completed >= target || m_vif1WorkerStop; });
+    const auto start = std::chrono::steady_clock::now();
+    bool waited = false;
+    {
+        std::unique_lock<std::mutex> lock(m_vif1QueueMutex);
+        const uint64_t target = m_vif1Submitted;
+        waited = m_vif1Completed < target;
+        m_vif1IdleCv.wait(lock, [&]
+                          { return m_vif1Completed >= target || m_vif1WorkerStop; });
+    }
+    if (!g_vif1Sync.enabled)
+        return;
+    ++g_vif1Sync.calls;
+    const auto now = std::chrono::steady_clock::now();
+    if (waited)
+    {
+        ++g_vif1Sync.waits;
+        g_vif1Sync.waitNs += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - start).count());
+    }
+    const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    int64_t last = g_vif1Sync.lastReport.load();
+    if (nowMs - last >= 2000 && g_vif1Sync.lastReport.compare_exchange_strong(last, nowMs))
+    {
+        std::cerr << "[sync:vif1] calls=" << g_vif1Sync.calls.exchange(0) << " waits=" << g_vif1Sync.waits.exchange(0)
+                  << " wait_ms=" << g_vif1Sync.waitNs.exchange(0) / 1000000u << " last_reason=0x" << std::hex << reason
+                  << std::dec << std::endl;
+    }
 }
 
 void PS2Memory::vif1WorkerLoop(std::function<void()> onWorkerStart)
@@ -1082,25 +1130,41 @@ void PS2Memory::vif1WorkerLoop(std::function<void()> onWorkerStart)
         onWorkerStart();
     for (;;)
     {
-        std::vector<uint8_t> buffer;
+        Vif1QueueItem item;
         {
             std::unique_lock<std::mutex> lock(m_vif1QueueMutex);
             m_vif1QueueCv.wait(lock, [&]
                                { return !m_vif1Queue.empty() || m_vif1WorkerStop; });
             if (m_vif1Queue.empty())
                 break;
-            buffer = std::move(m_vif1Queue.front());
+            item = std::move(m_vif1Queue.front());
             m_vif1Queue.pop_front();
         }
-        processVIF1DataNow(buffer.data(), static_cast<uint32_t>(buffer.size()));
+        switch (item.kind)
+        {
+        case Vif1QueueItem::Kind::Vif1Data:
+            processVIF1DataNow(item.data.data(), static_cast<uint32_t>(item.data.size()));
+            break;
+        case Vif1QueueItem::Kind::GifPacket:
+            submitGifPacket(item.path, item.data.data(), static_cast<uint32_t>(item.data.size()),
+                            item.drainImmediately, item.path2DirectHl);
+            break;
+        case Vif1QueueItem::Kind::GifDrain:
+            if (m_gifArbiter)
+            {
+                std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
+                m_gifArbiter->drain();
+            }
+            break;
+        }
         {
             std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
-            m_vif1QueuedBytes -= buffer.size();
+            m_vif1QueuedBytes -= item.data.size() + 16u;
             ++m_vif1Completed;
-            if (m_vif1FreeBuffers.size() < 64u)
+            if (m_vif1FreeBuffers.size() < 64u && item.data.capacity() != 0u)
             {
-                buffer.clear();
-                m_vif1FreeBuffers.push_back(std::move(buffer));
+                item.data.clear();
+                m_vif1FreeBuffers.push_back(std::move(item.data));
             }
         }
         m_vif1IdleCv.notify_all();

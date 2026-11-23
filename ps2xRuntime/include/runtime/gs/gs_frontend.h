@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <thread>
 #include <cstddef>
 #include <cstdint>
@@ -118,6 +119,11 @@ public:
     void setThreaded(bool enabled);
     // Waits until every command submitted before this call is processed.
     void waitIdle();
+    // Called before GS input that does not come through the GIF arbiter (HLE
+    // stubs on the game thread): the runtime makes it wait for the VU thread,
+    // so that input cannot overtake queued PATH1/2/3 packets. Never called on
+    // the GS worker.
+    void setBeforeDirectInput(std::function<void()> hook) { m_beforeDirectInput = std::move(hook); }
 
     void init(uint8_t *vram, uint32_t vramSize, struct GSRegisters *privRegs = nullptr);
     void reset();
@@ -181,6 +187,12 @@ private:
     void workerLoop();
     void stopWorker();
 
+    std::function<void()> m_beforeDirectInput;
+    void beforeDirectInput()
+    {
+        if (m_beforeDirectInput && std::this_thread::get_id() != m_workerId)
+            m_beforeDirectInput();
+    }
     std::atomic<bool> m_threaded{false};
     std::thread m_worker;
     std::thread::id m_workerId{};
