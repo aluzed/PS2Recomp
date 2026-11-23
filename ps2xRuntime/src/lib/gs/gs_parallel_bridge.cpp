@@ -22,6 +22,7 @@ bool GSParallelBridge::vsync(const GSRegisters &, uint32_t, std::vector<uint8_t>
 #include "context.hpp"
 #include "device.hpp"
 #include "gs_interface.hpp"
+#include "thread_id.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -30,6 +31,19 @@ bool GSParallelBridge::vsync(const GSRegisters &, uint32_t, std::vector<uint8_t>
 namespace
 {
     constexpr uint64_t kGifRegAD = 0xEu;
+
+    // Granite looks up a per-thread index for command pools. The GS is driven
+    // from the guest's game thread as well as the host thread that created it
+    // (one at a time), so every caller registers as index 0.
+    void ensureGraniteThread()
+    {
+        static thread_local bool registered = false;
+        if (!registered)
+        {
+            Util::register_thread_index(0);
+            registered = true;
+        }
+    }
 
     uint64_t adTagLo(uint32_t nloop, bool eop)
     {
@@ -51,6 +65,7 @@ GSParallelBridge::~GSParallelBridge() = default;
 
 bool GSParallelBridge::initialize(const uint8_t *initialVram, uint32_t vramSize)
 {
+    ensureGraniteThread();
     if (!Vulkan::Context::init_loader(nullptr))
     {
         std::cerr << "[gs:parallel] Vulkan loader not available" << std::endl;
@@ -95,6 +110,7 @@ bool GSParallelBridge::initialize(const uint8_t *initialVram, uint32_t vramSize)
 
 void GSParallelBridge::transfer(uint32_t path, const uint8_t *data, uint32_t sizeBytes)
 {
+    ensureGraniteThread();
     const uint32_t aligned = sizeBytes & ~15u;
     if (!m_impl || !m_impl->ready || !data || aligned == 0u)
         return;
@@ -103,6 +119,7 @@ void GSParallelBridge::transfer(uint32_t path, const uint8_t *data, uint32_t siz
 
 void GSParallelBridge::writeRegister(uint8_t regAddr, uint64_t value)
 {
+    ensureGraniteThread();
     if (!m_impl)
         return;
     const uint64_t packet[4] = {adTagLo(1u, true), kGifRegAD, value, static_cast<uint64_t>(regAddr)};
@@ -112,6 +129,7 @@ void GSParallelBridge::writeRegister(uint8_t regAddr, uint64_t value)
 void GSParallelBridge::imageUpload(uint64_t bitbltbuf, uint64_t trxpos, uint64_t trxreg, uint64_t trxdir,
                                    const uint8_t *data, uint32_t sizeBytes)
 {
+    ensureGraniteThread();
     if (!m_impl || !m_impl->ready || !data)
         return;
     const uint64_t setup[10] = {adTagLo(4u, false), kGifRegAD,
@@ -138,6 +156,7 @@ void GSParallelBridge::imageUpload(uint64_t bitbltbuf, uint64_t trxpos, uint64_t
 bool GSParallelBridge::vsync(const GSRegisters &regs, uint32_t field,
                              std::vector<uint8_t> &pixels, uint32_t &width, uint32_t &height)
 {
+    ensureGraniteThread();
     if (!m_impl || !m_impl->ready)
         return false;
 
