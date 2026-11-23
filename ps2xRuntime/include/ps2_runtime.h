@@ -336,6 +336,15 @@ public:
     {
         PS2Memory::GuestState memory;
         EeSchedulerState scheduler;
+        // Runtime-side allocator behind the HLE malloc family, and the stack
+        // area for asynchronous guest callbacks: their state lives on the host.
+        struct HeapState
+        {
+            std::vector<std::array<uint32_t, 3>> blocks; // addr, size, free
+            uint32_t base = 0, end = 0, limit = 0, suggestedBase = 0;
+            bool configured = false;
+            uint32_t asyncStackFloor = 0, asyncStackTop = 0;
+        } heap;
     };
     void captureGuestSnapshot(GuestSnapshot &out);
     bool restoreGuestSnapshot(const GuestSnapshot &in);

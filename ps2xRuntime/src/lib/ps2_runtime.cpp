@@ -530,6 +530,22 @@ void PS2Runtime::captureGuestSnapshot(GuestSnapshot &out)
     m_gs.waitIdle();
     m_memory.saveGuestState(out.memory);
     m_eeScheduler->saveState(out.scheduler);
+    {
+        std::lock_guard<std::mutex> lock(m_guestHeapMutex);
+        out.heap.blocks.clear();
+        for (const GuestHeapBlock &b : m_guestHeapBlocks)
+            out.heap.blocks.push_back({b.addr, b.size, b.free ? 1u : 0u});
+        out.heap.base = m_guestHeapBase;
+        out.heap.end = m_guestHeapEnd;
+        out.heap.limit = m_guestHeapLimit;
+        out.heap.suggestedBase = m_guestHeapSuggestedBase;
+        out.heap.configured = m_guestHeapConfigured;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
+        out.heap.asyncStackFloor = m_asyncCallbackStackFloor;
+        out.heap.asyncStackTop = m_asyncCallbackStackTop;
+    }
 }
 
 bool PS2Runtime::restoreGuestSnapshot(const GuestSnapshot &in)
@@ -538,6 +554,22 @@ bool PS2Runtime::restoreGuestSnapshot(const GuestSnapshot &in)
     if (!m_eeScheduler->loadState(in.scheduler))
         return false;
     m_memory.loadGuestState(in.memory);
+    {
+        std::lock_guard<std::mutex> lock(m_guestHeapMutex);
+        m_guestHeapBlocks.clear();
+        for (const auto &b : in.heap.blocks)
+            m_guestHeapBlocks.push_back(GuestHeapBlock{b[0], b[1], b[2] != 0u});
+        m_guestHeapBase = in.heap.base;
+        m_guestHeapEnd = in.heap.end;
+        m_guestHeapLimit = in.heap.limit;
+        m_guestHeapSuggestedBase = in.heap.suggestedBase;
+        m_guestHeapConfigured = in.heap.configured;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
+        m_asyncCallbackStackFloor = in.heap.asyncStackFloor;
+        m_asyncCallbackStackTop = in.heap.asyncStackTop;
+    }
     return true;
 }
 
