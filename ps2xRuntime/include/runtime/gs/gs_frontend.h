@@ -2,6 +2,10 @@
 #define PS2_GS_FRONTEND_H
 
 #include <array>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -102,7 +106,18 @@ class GS
 {
 public:
     GS();
-    ~GS() = default;
+    ~GS();
+
+    // Threaded GS (like PCSX2's MTGS): GIF packets and register writes from
+    // other threads are copied into a queue run by a GS worker thread, so the
+    // game thread does not wait for GIF decoding and the hardware GS. Reads
+    // that depend on processed state (local->host transfers, framebuffer
+    // clears, presentation) wait for everything submitted before them.
+    // Off by default (tests rely on synchronous processing); PS2Runtime::run
+    // enables it unless PS2X_MTGS=0.
+    void setThreaded(bool enabled);
+    // Waits until every command submitted before this call is processed.
+    void waitIdle();
 
     void init(uint8_t *vram, uint32_t vramSize, struct GSRegisters *privRegs = nullptr);
     void reset();
@@ -153,6 +168,32 @@ public:
     uint32_t ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const;
 
 private:
+    struct QueuedCommand
+    {
+        bool isPacket = true;
+        std::vector<uint8_t> data;
+        uint8_t reg = 0;
+        uint64_t value = 0;
+    };
+    void processGIFPacketNow(const uint8_t *data, uint32_t sizeBytes);
+    void writeRegisterNow(uint8_t regAddr, uint64_t value);
+    bool enqueueIfThreaded(QueuedCommand &&command, size_t bytes);
+    void workerLoop();
+    void stopWorker();
+
+    std::atomic<bool> m_threaded{false};
+    std::thread m_worker;
+    std::thread::id m_workerId{};
+    std::mutex m_queueMutex;
+    std::condition_variable m_queueCv;
+    std::condition_variable m_idleCv;
+    std::deque<QueuedCommand> m_queue;
+    std::vector<std::vector<uint8_t>> m_freeBuffers; // recycled packet buffers
+    size_t m_queuedBytes = 0;
+    uint64_t m_submitted = 0;
+    uint64_t m_completed = 0;
+    bool m_workerStop = false;
+
     void snapshotVRAM();
     void writeRegisterUnlocked(uint8_t regAddr, uint64_t value);
     void writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi);

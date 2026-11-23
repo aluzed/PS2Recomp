@@ -544,6 +544,8 @@ void GS::setHardwareQuality(uint32_t superSampling, bool highResolutionScanout)
 
 void GS::latchHostPresentationFrame()
 {
+    waitIdle(); // depends on everything submitted so far (threaded GS)
+
     GSPresentationRequest request{};
     {
         std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
@@ -674,7 +676,7 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
     return true;
 }
 
-void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+void GS::processGIFPacketNow(const uint8_t *data, uint32_t sizeBytes)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (!data || sizeBytes < 16 || !m_backend)
@@ -1102,7 +1104,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
     }
 }
 
-void GS::writeRegister(uint8_t regAddr, uint64_t value)
+void GS::writeRegisterNow(uint8_t regAddr, uint64_t value)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_dumpRecorder.recordRegister(regAddr, value);
@@ -1670,6 +1672,8 @@ void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
 
 bool GS::clearFramebufferContext(uint32_t contextIndex, uint32_t rgba)
 {
+    waitIdle(); // depends on everything submitted so far (threaded GS)
+
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     return m_backend && m_backend->ClearFramebuffer(m_ctx[(contextIndex != 0u) ? 1 : 0], rgba);
 }
@@ -1682,6 +1686,8 @@ bool GS::clearActiveFramebuffer(uint32_t rgba)
 
 uint32_t GS::consumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
 {
+    waitIdle(); // depends on everything submitted so far (threaded GS)
+
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     return m_backend ? m_backend->ConsumeLocalToHostBytes(dst, maxBytes) : 0u;
 }
@@ -1786,4 +1792,135 @@ void GS::updatePreferredDisplaySourceForDraw(const GSPrimitiveBatch &batch)
         m_preferredDisplayDestFbp = ctx.frame.fbp;
         m_hasPreferredDisplaySource = true;
     }
+}
+
+// ---- threaded GS (MTGS) ----
+
+GS::~GS()
+{
+    stopWorker();
+}
+
+void GS::setThreaded(bool enabled)
+{
+    if (enabled == m_threaded.load(std::memory_order_acquire))
+        return;
+    if (!enabled)
+    {
+        waitIdle();
+        stopWorker();
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_workerStop = false;
+    }
+    m_worker = std::thread([this]
+                           { workerLoop(); });
+    m_workerId = m_worker.get_id(); // published by the release store below
+    m_threaded.store(true, std::memory_order_release);
+}
+
+void GS::stopWorker()
+{
+    m_threaded.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        m_workerStop = true;
+    }
+    m_queueCv.notify_all();
+    if (m_worker.joinable())
+        m_worker.join();
+    m_workerId = std::thread::id{};
+}
+
+void GS::waitIdle()
+{
+    if (!m_threaded.load(std::memory_order_acquire) || std::this_thread::get_id() == m_workerId)
+        return;
+    std::unique_lock<std::mutex> lock(m_queueMutex);
+    const uint64_t target = m_submitted;
+    m_idleCv.wait(lock, [&]
+                  { return m_completed >= target || m_workerStop; });
+}
+
+bool GS::enqueueIfThreaded(QueuedCommand &&command, size_t bytes)
+{
+    if (!m_threaded.load(std::memory_order_acquire) || std::this_thread::get_id() == m_workerId)
+        return false;
+    // Back-pressure: the producer waits when the GS falls far behind.
+    constexpr size_t kMaxQueuedBytes = 32u * 1024u * 1024u;
+    std::unique_lock<std::mutex> lock(m_queueMutex);
+    m_idleCv.wait(lock, [&]
+                  { return m_queuedBytes < kMaxQueuedBytes || m_workerStop; });
+    m_queuedBytes += bytes;
+    m_queue.push_back(std::move(command));
+    ++m_submitted;
+    lock.unlock();
+    m_queueCv.notify_one();
+    return true;
+}
+
+void GS::workerLoop()
+{
+    for (;;)
+    {
+        QueuedCommand command;
+        {
+            std::unique_lock<std::mutex> lock(m_queueMutex);
+            m_queueCv.wait(lock, [&]
+                           { return !m_queue.empty() || m_workerStop; });
+            if (m_queue.empty())
+                break; // stop requested and nothing left
+            command = std::move(m_queue.front());
+            m_queue.pop_front();
+        }
+        if (command.isPacket)
+            processGIFPacketNow(command.data.data(), static_cast<uint32_t>(command.data.size()));
+        else
+            writeRegisterNow(command.reg, command.value);
+        {
+            std::lock_guard<std::mutex> lock(m_queueMutex);
+            m_queuedBytes -= command.isPacket ? command.data.size() : 16u;
+            ++m_completed;
+            if (command.isPacket && m_freeBuffers.size() < 64u)
+            {
+                command.data.clear();
+                m_freeBuffers.push_back(std::move(command.data));
+            }
+        }
+        m_idleCv.notify_all();
+    }
+}
+
+void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+{
+    if (m_threaded.load(std::memory_order_acquire) && data && sizeBytes >= 16u &&
+        std::this_thread::get_id() != m_workerId)
+    {
+        QueuedCommand command;
+        {
+            std::lock_guard<std::mutex> lock(m_queueMutex);
+            if (!m_freeBuffers.empty())
+            {
+                command.data = std::move(m_freeBuffers.back());
+                m_freeBuffers.pop_back();
+            }
+        }
+        command.data.assign(data, data + sizeBytes);
+        if (enqueueIfThreaded(std::move(command), sizeBytes))
+            return;
+    }
+    processGIFPacketNow(data, sizeBytes);
+}
+
+void GS::writeRegister(uint8_t regAddr, uint64_t value)
+{
+    QueuedCommand command;
+    command.isPacket = false;
+    command.reg = regAddr;
+    command.value = value;
+    if (enqueueIfThreaded(std::move(command), 16u))
+        return;
+    writeRegisterNow(regAddr, value);
 }

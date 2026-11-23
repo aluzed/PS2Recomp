@@ -2430,6 +2430,13 @@ void PS2Runtime::run()
     // A blank image to use as a framebuffer
     Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
     Texture2D frameTex = LoadTextureFromImage(blank);
+    {
+        // Threaded GS (MTGS) for the game loop; PS2X_MTGS=0 keeps it on the game thread.
+        const char *mtgs = std::getenv("PS2X_MTGS");
+        const bool threaded = !(mtgs && mtgs[0] == '0');
+        m_gs.setThreaded(threaded);
+        std::cerr << "[gs] " << (threaded ? "threaded GS (MTGS)" : "GS on the game thread") << std::endl;
+    }
     UnloadImage(blank);
 
     std::atomic<bool> gameThreadFinished{false};
