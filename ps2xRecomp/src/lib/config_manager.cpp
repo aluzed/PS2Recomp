@@ -65,6 +65,10 @@ namespace ps2recomp
             config.patchCop0 = toml::find_or<bool>(general, "patch_cop0", config.patchCop0);
             config.patchCache = toml::find_or<bool>(general, "patch_cache", config.patchCache);
 
+            if (general.contains("jalr_is_call") && general.at("jalr_is_call").is_boolean())
+            {
+                config.jalrIsCall = toml::find<bool>(general, "jalr_is_call");
+            }
             if (general.contains("force_recompile") && general.at("force_recompile").is_array())
             {
                 config.forceRecompile = toml::find<std::vector<std::string>>(general, "force_recompile");
@@ -307,6 +311,8 @@ namespace ps2recomp
         general["stubs"] = config.stubImplementations;
         if (!config.forceRecompile.empty())
             general["force_recompile"] = config.forceRecompile;
+        if (config.jalrIsCall)
+            general["jalr_is_call"] = true;
         general["entry_points"] = config.entryPointHints;
         data["general"] = general;
 

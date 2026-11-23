@@ -95,10 +95,11 @@ namespace ps2recomp
     ControlFlowAnalyzer::ControlFlowAnalyzer(
         const std::vector<Section> &sections,
         const std::unordered_map<uint32_t, std::vector<uint32_t>> &configuredJumpTableTargetsByAddress,
-        RecompilerReporter *reporter)
+        RecompilerReporter *reporter,
+        bool jalrIsCall)
         : m_sections(sections),
           m_configJumpTableTargetsByAddress(configuredJumpTableTargetsByAddress),
-          m_reporter(reporter)
+          m_reporter(reporter), m_jalrIsCall(jalrIsCall)
     {
     }
 
@@ -277,7 +278,15 @@ namespace ps2recomp
             {
                 if (jrInst->function == SPECIAL_JALR)
                 {
+                    // A call through a register: the callee is another
+                    // function and control comes back at +8, the only entry
+                    // this function needs. Promoting every instruction to a
+                    // fallback entry here (as for an unresolved JR) turned the
+                    // whole function into one big switch that the C++
+                    // compiler cannot optimise.
                     queueResumeEntryTarget(jrInst->address + 8u);
+                    if (m_jalrIsCall)
+                        continue;
                 }
 
                 bool foundTable = false;

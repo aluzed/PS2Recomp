@@ -1022,6 +1022,7 @@ namespace ps2recomp
             m_codeGenerator->setRelocationCallNames(relocationCallNames);
             m_codeGenerator->setBootstrapInfo(m_bootstrapInfo);
             m_codeGenerator->setConfiguredJumpTables(m_config.jumpTables);
+            m_codeGenerator->setJalrIsCall(m_config.jalrIsCall);
             m_codeGenerator->setEmitInstructionComments(true);
 
             fs::create_directories(m_config.outputPath);
