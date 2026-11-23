@@ -305,6 +305,15 @@ public:
     bool isIopMemoryRange(uint32_t address, size_t size) const;
 
     using DebugUiCallback = void (*)(PS2Runtime &runtime, void *userData);
+    // Game-layer overlay drawn on the host thread every presented frame, after
+    // the game picture and the debug UI, inside BeginDrawing/EndDrawing (raylib
+    // screen coordinates). For player-facing menus such as settings.
+    using HostOverlayCallback = void (*)(PS2Runtime &runtime, void *userData);
+    void setHostOverlayCallback(HostOverlayCallback callback, void *userData)
+    {
+        m_hostOverlayCallback = callback;
+        m_hostOverlayUserData = userData;
+    }
     void setDebugUiCallbacks(DebugUiCallback initCallback,
                              DebugUiCallback drawCallback,
                              DebugUiCallback shutdownCallback,
@@ -524,6 +533,8 @@ private:
     std::atomic<uint32_t> m_missingFunctionPolicy{static_cast<uint32_t>(MissingFunctionPolicy::ContinueToTarget)};
     std::atomic<bool> m_missingFunctionReported{false};
     std::atomic<bool> m_stopRequested{false};
+    HostOverlayCallback m_hostOverlayCallback = nullptr;
+    void *m_hostOverlayUserData = nullptr;
     DebugUiCallback m_debugUiInitCallback = nullptr;
     DebugUiCallback m_debugUiDrawCallback = nullptr;
     DebugUiCallback m_debugUiShutdownCallback = nullptr;

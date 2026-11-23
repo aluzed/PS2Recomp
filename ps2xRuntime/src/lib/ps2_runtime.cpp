@@ -2491,6 +2491,10 @@ void PS2Runtime::run()
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);
         }
+        if (m_hostOverlayCallback)
+        {
+            m_hostOverlayCallback(*this, m_hostOverlayUserData);
+        }
         EndDrawing();
 
         if (WindowShouldClose())
