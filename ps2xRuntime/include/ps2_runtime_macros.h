@@ -387,6 +387,17 @@ inline __m128 ps2_vu_min_ps(__m128 a, __m128 b)
     return _mm_castsi128_ps(_mm_blendv_epi8(_mm_min_epi32(ai, bi), _mm_max_epi32(ai, bi), bothNegative));
 }
 
+// CVT.W.S: the EE always truncates toward zero, whatever FCR31 says. A magnitude of 2^31 or more
+// saturates by sign to 0x7FFFFFFF / 0x80000000. The EE has no Inf/NaN, so exponent-255 patterns are
+// just large numbers and saturate the same way (as PCSX2's interpreter CVT_W does).
+inline int32_t ps2_fcvt_w(float a)
+{
+    const uint32_t bits = std::bit_cast<uint32_t>(a);
+    if ((bits & PS2_FLOAT_EXP_MASK) <= 0x4E800000u) // exponent <= 157: |a| < 2^31
+        return static_cast<int32_t>(a);
+    return (bits & PS2_FLOAT_SIGN_MASK) ? INT32_MIN : INT32_MAX;
+}
+
 enum class Ps2VecOp
 {
     Add,
@@ -929,7 +940,7 @@ inline __m128i ps2_u64_to_epi64_pair(uint64_t value)
 #define FPU_FLOOR_W_S(a) ((int32_t)floorf((float)(a)))
 #define FPU_CVT_S_W(a) ((float)(int32_t)(a))
 #define FPU_CVT_S_L(a) ((float)(int64_t)(a))
-#define FPU_CVT_W_S(a) ((int32_t)nearbyintf((float)(a)))
+#define FPU_CVT_W_S(a) ps2_fcvt_w((float)(a))
 #define FPU_CVT_L_S(a) ((int64_t)(float)(a))
 #define FPU_C_F_S(a, b) (0)
 // The R5900 FPU implements only C.F, C.EQ, C.LT and C.LE, on the function codes MIPS gives C.F,
