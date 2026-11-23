@@ -1439,6 +1439,9 @@ void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint3
         return;
     }
 
+    if (runKzvuVu0(ctx, startPC))
+        return;
+
     m_vu0.reset();
     copyVu0ContextToState(ctx, m_vu0.state());
     m_vu0.execute(vu0Code, PS2_VU0_CODE_SIZE,

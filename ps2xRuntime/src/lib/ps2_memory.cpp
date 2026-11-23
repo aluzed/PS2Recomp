@@ -272,6 +272,12 @@ PS2Memory::~PS2Memory()
         m_vu1Data = m_vu1DataOwned;
         m_vu1CodeOwned = m_vu1DataOwned = nullptr;
     }
+    if (m_vu0CodeOwned)
+    {
+        m_vu0Code = m_vu0CodeOwned;
+        m_vu0Data = m_vu0DataOwned;
+        m_vu0CodeOwned = m_vu0DataOwned = nullptr;
+    }
     if (m_vu1Code)
     {
         delete[] m_vu1Code;
@@ -316,6 +322,22 @@ void PS2Memory::adoptVU1Buffers(uint8_t *code, uint8_t *data)
     markVU1CodeModified();
 }
 
+void PS2Memory::adoptVU0Buffers(uint8_t *code, uint8_t *data)
+{
+    if (!code || !data || !m_vu0Code || !m_vu0Data)
+        return;
+    std::memcpy(code, m_vu0Code, PS2_VU0_CODE_SIZE);
+    std::memcpy(data, m_vu0Data, PS2_VU0_DATA_SIZE);
+    if (!m_vu0CodeOwned)
+    {
+        m_vu0CodeOwned = m_vu0Code;
+        m_vu0DataOwned = m_vu0Data;
+    }
+    m_vu0Code = code;
+    m_vu0Data = data;
+    markVU0CodeModified();
+}
+
 bool PS2Memory::initialize(size_t ramSize)
 {
     auto cleanup = [this]()
@@ -326,6 +348,12 @@ bool PS2Memory::initialize(size_t ramSize)
             m_vu1Code = m_vu1CodeOwned;
             m_vu1Data = m_vu1DataOwned;
             m_vu1CodeOwned = m_vu1DataOwned = nullptr;
+        }
+        if (m_vu0CodeOwned)
+        {
+            m_vu0Code = m_vu0CodeOwned;
+            m_vu0Data = m_vu0DataOwned;
+            m_vu0CodeOwned = m_vu0DataOwned = nullptr;
         }
         delete[] m_rdram;
         delete[] m_scratchpad;

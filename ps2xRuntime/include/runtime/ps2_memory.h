@@ -339,6 +339,8 @@ public:
     // Makes VU1 micro/data memory live in buffers owned by an external VU1 core
     // (which addresses them directly); the current contents are copied over.
     void adoptVU1Buffers(uint8_t *code, uint8_t *data);
+    // Same for VU0 micro/data memory (4 KiB each).
+    void adoptVU0Buffers(uint8_t *code, uint8_t *data);
     uint8_t *getVU1Code() { return m_vu1Code; }
     const uint8_t *getVU1Code() const { return m_vu1Code; }
     uint8_t *getVU1Data() { return m_vu1Data; }
@@ -425,6 +427,8 @@ public:
     uint8_t *m_vu1Data = nullptr;
     uint8_t *m_vu1CodeOwned = nullptr; // our own buffers while adopted ones are in use
     uint8_t *m_vu1DataOwned = nullptr;
+    uint8_t *m_vu0CodeOwned = nullptr;
+    uint8_t *m_vu0DataOwned = nullptr;
     bool m_path3Masked = false;
     uint32_t m_vif1PendingPath2ImageQwc = 0u;
     bool m_vif1PendingPath2DirectHl = false;
