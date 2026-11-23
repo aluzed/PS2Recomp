@@ -385,6 +385,7 @@ add_library(ps2_runtime STATIC
     src/lib/gs/gs_cpu_backend.cpp
     src/lib/gs/gs_dump_recorder.cpp
     src/lib/gs/gs_parallel_bridge.cpp
+    src/lib/vu/vu1_kzvu_bridge.cpp
     src/lib/ps2_iop_host.cpp
     src/lib/ps2_memory.cpp
     src/lib/ps2_pad.cpp
@@ -397,6 +398,19 @@ add_library(ps2_runtime STATIC
     src/lib/vu/ps2_vu1_lower.cpp
     src/lib/games_database.cpp
 )
+
+# Optional VU1 recompiler (PCSX2 microVU through kzvu, GPL-3.0+). Pass the kzvu
+# directory and the PCSX2 source tree it builds from.
+set(PS2X_KZVU_DIR "" CACHE PATH "kzvu source directory (optional)")
+set(PS2X_PCSX2_DIR "" CACHE PATH "PCSX2 source tree used by kzvu")
+if(PS2X_KZVU_DIR AND EXISTS "${PS2X_KZVU_DIR}/include/kzvu.h")
+    set(KZVU_PCSX2_DIR "${PS2X_PCSX2_DIR}" CACHE PATH "" FORCE)
+    set(KZVU_BUILD_TEST OFF CACHE BOOL "" FORCE)
+    add_subdirectory(${PS2X_KZVU_DIR} ${CMAKE_CURRENT_BINARY_DIR}/kzvu EXCLUDE_FROM_ALL)
+    target_link_libraries(ps2_runtime PRIVATE kzvu)
+    target_compile_definitions(ps2_runtime PRIVATE PS2X_ENABLE_KZVU=1)
+    message(STATUS "ps2xRuntime: microVU VU1 recompiler enabled (${PS2X_KZVU_DIR})")
+endif()
 
 # Optional hardware GS (paraLLEl-GS, LGPLv3+). Pass the path of a parallel-gs
 # checkout (with its Granite submodule) to enable it.

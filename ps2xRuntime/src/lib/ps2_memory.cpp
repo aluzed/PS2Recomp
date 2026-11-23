@@ -265,6 +265,13 @@ PS2Memory::~PS2Memory()
         m_gsVRAM = nullptr;
     }
 
+    // Buffers adopted from an external VU1 core are not ours: free our originals.
+    if (m_vu1CodeOwned)
+    {
+        m_vu1Code = m_vu1CodeOwned;
+        m_vu1Data = m_vu1DataOwned;
+        m_vu1CodeOwned = m_vu1DataOwned = nullptr;
+    }
     if (m_vu1Code)
     {
         delete[] m_vu1Code;
@@ -293,10 +300,33 @@ PS2Memory::~PS2Memory()
     }
 }
 
+void PS2Memory::adoptVU1Buffers(uint8_t *code, uint8_t *data)
+{
+    if (!code || !data || !m_vu1Code || !m_vu1Data)
+        return;
+    std::memcpy(code, m_vu1Code, PS2_VU1_CODE_SIZE);
+    std::memcpy(data, m_vu1Data, PS2_VU1_DATA_SIZE);
+    if (!m_vu1CodeOwned)
+    {
+        m_vu1CodeOwned = m_vu1Code;
+        m_vu1DataOwned = m_vu1Data;
+    }
+    m_vu1Code = code;
+    m_vu1Data = data;
+    markVU1CodeModified();
+}
+
 bool PS2Memory::initialize(size_t ramSize)
 {
     auto cleanup = [this]()
     {
+        // Buffers adopted from an external VU1 core are not ours: free our originals.
+        if (m_vu1CodeOwned)
+        {
+            m_vu1Code = m_vu1CodeOwned;
+            m_vu1Data = m_vu1DataOwned;
+            m_vu1CodeOwned = m_vu1DataOwned = nullptr;
+        }
         delete[] m_rdram;
         delete[] m_scratchpad;
         delete[] iop_ram;
