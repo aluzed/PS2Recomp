@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -358,7 +359,23 @@ public:
     void bindMainContextForSyscall(R5900Context &ctx, uint8_t *rdram);
 
     [[nodiscard]] EeKernelSnapshot snapshot() const;
+
+    // Rollback support: copy / restore the scheduler's guest-visible state.
+    // Call on the executor thread at a guest safe point. loadState() refuses
+    // (returns false) when the thread set or the invocation depth differ from
+    // the saved ones: running host code points into those contexts.
+    void saveState(EeSchedulerState &out) const;
+    bool loadState(const EeSchedulerState &in);
     void publishSnapshot();
+
+    // Plain copy of a scheduled event (snapshots).
+    struct ScheduledEventCopy
+    {
+        uint64_t deadlineCycle = 0;
+        std::chrono::steady_clock::time_point hostDeadline{};
+        EeEvent event{};
+        uint64_t sequence = 0;
+    };
 
 private:
     struct ScheduledEvent

@@ -379,6 +379,26 @@ public:
     // `reason`: the address that needed it (diagnostics, PS2X_SYNC_STATS).
     void waitVif1Idle(uint32_t reason = 0) const;
     bool onVif1Thread() const { return std::this_thread::get_id() == m_vif1WorkerId; }
+
+    // Rollback support: guest-visible memory and EE-side hardware registers
+    // (RAM, scratchpad, I/O registers, EE timers, VIF0/VIF1 and GS privileged
+    // registers). Waits for the VU thread first. VU/GS internal state is not
+    // included: in Street Fighter EX3 fights it does not feed back into RAM.
+    struct GuestState
+    {
+        std::vector<uint8_t> rdram;
+        std::vector<uint8_t> scratchpad;
+        std::unordered_map<uint32_t, uint32_t> ioRegisters;
+        std::array<uint32_t, 4 * 4> timerWords{};
+        std::array<uint64_t, 4> timerRemainders{};
+        uint64_t timerPendingCycles = 0, timerBudget = 0;
+        uint32_t timerPendingInterrupts = 0;
+        VIFRegisters vif0{}, vif1{};
+        std::array<uint64_t, 20> gsRegisters{};
+        bool path3Masked = false;
+    };
+    void saveGuestState(GuestState &out);
+    void loadGuestState(const GuestState &in);
     void processPendingTransfers();
     std::vector<uint32_t> consumeCompletedDmacCauses();
 

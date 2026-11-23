@@ -2153,3 +2153,160 @@ void EeScheduler::publishIdleDebugContext()
         publishDebugContext(selected->activeContext());
     }
 }
+
+// ---- rollback snapshots ----
+
+struct EeSchedulerState::Data
+{
+    std::array<std::deque<int>, EeScheduler::kPriorityCount> readyQueues{};
+    std::unordered_map<int, GuestThread> threads;
+    std::unordered_map<int, EeSemaphore> semaphores;
+    std::unordered_map<int, EeEventFlag> eventFlags;
+    std::unordered_map<int, EeAlarm> alarms;
+    std::unordered_map<int, EeIrqHandler> intcHandlers;
+    std::unordered_map<int, EeIrqHandler> dmacHandlers;
+    int nextThreadId = 0, nextInvocationThreadId = 0, nextSemaphoreId = 0, nextEventFlagId = 0;
+    int nextAlarmId = 0, nextIntcHandlerId = 0, nextDmacHandlerId = 0;
+    int intcHeadOrder = 0, intcTailOrder = 0, dmacHeadOrder = 0, dmacTailOrder = 0;
+    uint32_t enabledIntcMask = 0, enabledDmacMask = 0;
+    int currentThreadId = 0;
+    bool rescheduleRequested = false, timeSliceExpired = false, insideInterrupt = false;
+    uint32_t pendingEeTimerInterrupts = 0;
+    uint64_t eeCycle = 0, sliceEndCycle = 0;
+    std::deque<EeEvent> events;
+    std::vector<EeScheduler::ScheduledEventCopy> deadlines;
+    std::chrono::steady_clock::time_point savedAt{};
+    std::deque<GuestInvocation> pendingInvocations;
+    uint64_t eventSequence = 0, invocationSequence = 0, vsyncTick = 0;
+    uint32_t vsyncFlagAddress = 0, vsyncTickAddress = 0;
+    uint32_t gsVSyncCallback = 0, gsVSyncCallbackGp = 0, gsVSyncCallbackSp = 0;
+    std::unordered_map<uint64_t, uint32_t> invocationStackTops;
+};
+
+void EeScheduler::saveState(EeSchedulerState &out) const
+{
+    auto d = std::make_shared<EeSchedulerState::Data>();
+    d->readyQueues = m_readyQueues;
+    d->threads = m_threads;
+    d->semaphores = m_semaphores;
+    d->eventFlags = m_eventFlags;
+    d->alarms = m_alarms;
+    d->intcHandlers = m_intcHandlers;
+    d->dmacHandlers = m_dmacHandlers;
+    d->nextThreadId = m_nextThreadId;
+    d->nextInvocationThreadId = m_nextInvocationThreadId;
+    d->nextSemaphoreId = m_nextSemaphoreId;
+    d->nextEventFlagId = m_nextEventFlagId;
+    d->nextAlarmId = m_nextAlarmId;
+    d->nextIntcHandlerId = m_nextIntcHandlerId;
+    d->nextDmacHandlerId = m_nextDmacHandlerId;
+    d->intcHeadOrder = m_intcHeadOrder;
+    d->intcTailOrder = m_intcTailOrder;
+    d->dmacHeadOrder = m_dmacHeadOrder;
+    d->dmacTailOrder = m_dmacTailOrder;
+    d->enabledIntcMask = m_enabledIntcMask;
+    d->enabledDmacMask = m_enabledDmacMask;
+    d->currentThreadId = m_currentThreadId;
+    d->rescheduleRequested = m_rescheduleRequested;
+    d->timeSliceExpired = m_timeSliceExpired;
+    d->insideInterrupt = m_insideInterrupt;
+    d->pendingEeTimerInterrupts = m_pendingEeTimerInterrupts;
+    d->eeCycle = m_eeCycle;
+    d->sliceEndCycle = m_sliceEndCycle;
+    {
+        std::lock_guard lock(m_eventMutex);
+        d->events = m_events;
+        d->deadlines.reserve(m_deadlines.size());
+        for (const ScheduledEvent &e : m_deadlines)
+            d->deadlines.push_back({e.deadlineCycle, e.hostDeadline, e.event, e.sequence});
+        d->pendingInvocations = m_pendingInvocations;
+        d->eventSequence = m_eventSequence;
+    }
+    d->savedAt = std::chrono::steady_clock::now();
+    d->invocationSequence = m_invocationSequence;
+    d->vsyncTick = m_vsyncTick;
+    d->vsyncFlagAddress = m_vsyncFlagAddress;
+    d->vsyncTickAddress = m_vsyncTickAddress;
+    d->gsVSyncCallback = m_gsVSyncCallback;
+    d->gsVSyncCallbackGp = m_gsVSyncCallbackGp;
+    d->gsVSyncCallbackSp = m_gsVSyncCallbackSp;
+    d->invocationStackTops = m_invocationStackTops;
+    out.data = std::move(d);
+}
+
+bool EeScheduler::loadState(const EeSchedulerState &in)
+{
+    if (!in.data)
+        return false;
+    const EeSchedulerState::Data &d = *in.data;
+    // Host code currently runs on these contexts: keep every node and every
+    // invocation vector in place and copy the values into them.
+    if (d.threads.size() != m_threads.size())
+        return false;
+    for (const auto &[id, saved] : d.threads)
+    {
+        auto it = m_threads.find(id);
+        if (it == m_threads.end() || it->second.invocations.size() != saved.invocations.size())
+            return false;
+    }
+    for (const auto &[id, saved] : d.threads)
+    {
+        GuestThread &thread = m_threads.find(id)->second;
+        for (size_t i = 0; i < saved.invocations.size(); ++i)
+            thread.invocations[i] = saved.invocations[i];
+        std::vector<GuestInvocation> keep = std::move(thread.invocations);
+        GuestThread copy = saved;
+        copy.invocations.clear();
+        thread = std::move(copy);
+        thread.invocations = std::move(keep);
+    }
+    m_readyQueues = d.readyQueues;
+    m_semaphores = d.semaphores;
+    m_eventFlags = d.eventFlags;
+    m_alarms = d.alarms;
+    m_intcHandlers = d.intcHandlers;
+    m_dmacHandlers = d.dmacHandlers;
+    m_nextThreadId = d.nextThreadId;
+    m_nextInvocationThreadId = d.nextInvocationThreadId;
+    m_nextSemaphoreId = d.nextSemaphoreId;
+    m_nextEventFlagId = d.nextEventFlagId;
+    m_nextAlarmId = d.nextAlarmId;
+    m_nextIntcHandlerId = d.nextIntcHandlerId;
+    m_nextDmacHandlerId = d.nextDmacHandlerId;
+    m_intcHeadOrder = d.intcHeadOrder;
+    m_intcTailOrder = d.intcTailOrder;
+    m_dmacHeadOrder = d.dmacHeadOrder;
+    m_dmacTailOrder = d.dmacTailOrder;
+    m_enabledIntcMask = d.enabledIntcMask;
+    m_enabledDmacMask = d.enabledDmacMask;
+    m_currentThreadId = d.currentThreadId;
+    m_rescheduleRequested = d.rescheduleRequested;
+    m_timeSliceExpired = d.timeSliceExpired;
+    m_insideInterrupt = d.insideInterrupt;
+    m_pendingEeTimerInterrupts = d.pendingEeTimerInterrupts;
+    m_eeCycle = d.eeCycle;
+    m_sliceEndCycle = d.sliceEndCycle;
+    {
+        std::lock_guard lock(m_eventMutex);
+        m_events = d.events;
+        // Host deadlines move by the time spent since the save: pacing resumes
+        // from now instead of firing every saved deadline at once.
+        const auto shift = std::chrono::steady_clock::now() - d.savedAt;
+        m_deadlines.clear();
+        for (const ScheduledEventCopy &e : d.deadlines)
+            m_deadlines.push_back({e.deadlineCycle, e.hostDeadline + shift, e.event, e.sequence});
+        m_pendingInvocations = d.pendingInvocations;
+        m_eventSequence = d.eventSequence;
+        updateNextDeadline();
+    }
+    m_invocationSequence = d.invocationSequence;
+    m_vsyncTick = d.vsyncTick;
+    m_vsyncFlagAddress = d.vsyncFlagAddress;
+    m_vsyncTickAddress = d.vsyncTickAddress;
+    m_gsVSyncCallback = d.gsVSyncCallback;
+    m_gsVSyncCallbackGp = d.gsVSyncCallbackGp;
+    m_gsVSyncCallbackSp = d.gsVSyncCallbackSp;
+    m_invocationStackTops = d.invocationStackTops;
+    m_checkpointPending.store(true, std::memory_order_release);
+    return true;
+}

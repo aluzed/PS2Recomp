@@ -43,6 +43,14 @@ namespace ps2x::iop
 class PS2IopHostAdapter;
 class PS2IopTransport;
 class EeScheduler;
+
+// Everything the EE scheduler knows about the guest, for rollback snapshots
+// (PS2Runtime::captureGuestSnapshot). Opaque to callers.
+struct EeSchedulerState
+{
+    struct Data;
+    std::shared_ptr<Data> data;
+};
 struct EeEvent;
 
 enum PS2Exception
@@ -320,6 +328,18 @@ public:
         HostScaling scaling = HostScaling::Fit;
         bool smooth = true; // bilinear filtering of the picture (false: sharp pixels)
     };
+    // Rollback snapshot of the guest: memory and EE-side registers plus the EE
+    // scheduler. Take and restore it at the same guest program point (same
+    // call chain on the host stack), on the game thread. restoreGuestSnapshot
+    // returns false, changing nothing, when the guest thread layout differs.
+    struct GuestSnapshot
+    {
+        PS2Memory::GuestState memory;
+        EeSchedulerState scheduler;
+    };
+    void captureGuestSnapshot(GuestSnapshot &out);
+    bool restoreGuestSnapshot(const GuestSnapshot &in);
+
     void setHostPresentationOptions(const HostPresentationOptions &options);
     HostPresentationOptions hostPresentationOptions() const;
     void onPresentationTextureRecreated(struct Texture &tex);

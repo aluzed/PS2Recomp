@@ -2694,3 +2694,70 @@ void PS2Memory::clearModifiedFlag(uint32_t address, uint32_t size)
         }
     }
 }
+
+// ---- rollback snapshots ----
+
+void PS2Memory::saveGuestState(GuestState &out)
+{
+    waitVif1Idle();
+    out.rdram.assign(m_rdram, m_rdram + PS2_RAM_SIZE);
+    out.scratchpad.assign(m_scratchpad, m_scratchpad + PS2_SCRATCHPAD_SIZE);
+    out.ioRegisters = m_ioRegisters;
+    for (size_t i = 0; i < m_eeTimers.size(); ++i)
+    {
+        const EeTimer &t = m_eeTimers[i];
+        out.timerWords[i * 4 + 0] = t.count;
+        out.timerWords[i * 4 + 1] = t.mode;
+        out.timerWords[i * 4 + 2] = t.compare;
+        out.timerWords[i * 4 + 3] = t.hold;
+        out.timerRemainders[i] = t.clockRemainder;
+    }
+    out.timerPendingCycles = m_eeTimerPendingCycles;
+    out.timerBudget = m_eeTimerBudget;
+    out.timerPendingInterrupts = m_eeTimerPendingInterrupts;
+    out.vif0 = vif0_regs;
+    out.vif1 = vif1_regs;
+    {
+        const GSRegisters &g = gs();
+        const uint64_t plain[] = {g.pmode, g.smode1, g.smode2, g.srfsh, g.synch1, g.synch2, g.syncv,
+                                  g.dispfb1, g.display1, g.dispfb2, g.display2, g.extbuf, g.extdata,
+                                  g.extwrite, g.bgcolor, g.csr.load(), g.vsyncTick.load(), g.imr,
+                                  g.busdir, g.siglblid};
+        std::copy(std::begin(plain), std::end(plain), out.gsRegisters.begin());
+    }
+    out.path3Masked = m_path3Masked;
+}
+
+void PS2Memory::loadGuestState(const GuestState &in)
+{
+    waitVif1Idle();
+    std::memcpy(m_rdram, in.rdram.data(), std::min<size_t>(in.rdram.size(), PS2_RAM_SIZE));
+    std::memcpy(m_scratchpad, in.scratchpad.data(), std::min<size_t>(in.scratchpad.size(), PS2_SCRATCHPAD_SIZE));
+    m_ioRegisters = in.ioRegisters;
+    for (size_t i = 0; i < m_eeTimers.size(); ++i)
+    {
+        EeTimer &t = m_eeTimers[i];
+        t.count = in.timerWords[i * 4 + 0];
+        t.mode = in.timerWords[i * 4 + 1];
+        t.compare = in.timerWords[i * 4 + 2];
+        t.hold = in.timerWords[i * 4 + 3];
+        t.clockRemainder = in.timerRemainders[i];
+    }
+    m_eeTimerPendingCycles = in.timerPendingCycles;
+    m_eeTimerBudget = in.timerBudget;
+    m_eeTimerPendingInterrupts = in.timerPendingInterrupts;
+    vif0_regs = in.vif0;
+    vif1_regs = in.vif1;
+    {
+        GSRegisters &g = gs();
+        const auto &r = in.gsRegisters;
+        g.pmode = r[0]; g.smode1 = r[1]; g.smode2 = r[2]; g.srfsh = r[3]; g.synch1 = r[4];
+        g.synch2 = r[5]; g.syncv = r[6]; g.dispfb1 = r[7]; g.display1 = r[8]; g.dispfb2 = r[9];
+        g.display2 = r[10]; g.extbuf = r[11]; g.extdata = r[12]; g.extwrite = r[13]; g.bgcolor = r[14];
+        g.csr.store(r[15]); g.vsyncTick.store(r[16]); g.imr = r[17]; g.busdir = r[18]; g.siglblid = r[19];
+    }
+    {
+        std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
+        m_path3Masked = in.path3Masked;
+    }
+}

@@ -525,6 +525,22 @@ PS2Runtime::PS2Runtime()
     m_asyncCallbackStackTop = PS2_RAM_SIZE;
 }
 
+void PS2Runtime::captureGuestSnapshot(GuestSnapshot &out)
+{
+    m_gs.waitIdle();
+    m_memory.saveGuestState(out.memory);
+    m_eeScheduler->saveState(out.scheduler);
+}
+
+bool PS2Runtime::restoreGuestSnapshot(const GuestSnapshot &in)
+{
+    m_gs.waitIdle();
+    if (!m_eeScheduler->loadState(in.scheduler))
+        return false;
+    m_memory.loadGuestState(in.memory);
+    return true;
+}
+
 void PS2Runtime::setHostPresentationOptions(const HostPresentationOptions &options)
 {
     std::lock_guard lock(m_presentationMutex);
