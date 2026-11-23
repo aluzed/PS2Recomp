@@ -1,3 +1,4 @@
+#include "runtime/ps2_guest_clock.h"
 #include "Common.h"
 #include "MemoryCard.h"
 
@@ -252,15 +253,6 @@ namespace ps2_stubs
             return resolved.lexically_normal();
         }
 
-        bool localtimeSafeMc(const std::time_t *value, std::tm *out)
-        {
-#ifdef _WIN32
-            return localtime_s(out, value) == 0;
-#else
-            return localtime_r(value, out) != nullptr;
-#endif
-        }
-
         std::time_t fileTimeToTimeTMc(std::filesystem::file_time_type value)
         {
             const auto systemTime = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
@@ -287,7 +279,7 @@ namespace ps2_stubs
         void writeMcDateTime(SceMcStDateTime &out, std::time_t value)
         {
             std::tm tm{};
-            if (!localtimeSafeMc(&value, &tm))
+            if (!ps2x::guestLocalTime(value, tm))
             {
                 std::memset(&out, 0, sizeof(out));
                 return;

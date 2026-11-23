@@ -1,3 +1,4 @@
+#include "runtime/ps2_guest_clock.h"
 #include "Common.h"
 #include "CD.h"
 #include "MPEG.h"
@@ -517,13 +518,8 @@ namespace ps2_stubs
             return;
         }
 
-        std::time_t now = std::time(nullptr);
         std::tm localTm{};
-#ifdef _WIN32
-        localtime_s(&localTm, &now);
-#else
-        localtime_r(&now, &localTm);
-#endif
+        ps2x::guestLocalTime(std::time(nullptr), localTm);
 
         // sceCdCLOCK format (BCD fields).
         clockData[0] = 0;
