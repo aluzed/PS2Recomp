@@ -93,6 +93,7 @@ void VU1Interpreter::resetScheduler()
         x.active = x.currentTagEop = false;
     }
     m_vfReady = {};
+    m_vfRegReady = {};
     m_viReady = {};
     m_accReady = {};
     m_vfLatestWrite = {};
@@ -124,22 +125,6 @@ float VU1Interpreter::broadcast(const float *vf, uint8_t bc)
     return normalizeOperand(vf[bc & 3u]);
 }
 
-float VU1Interpreter::normalizeOperand(float value) const
-{
-    uint32_t bits = 0;
-    std::memcpy(&bits, &value, sizeof(bits));
-    const uint32_t exponent = (bits >> 23) & 0xFFu;
-    if (exponent == 0u)
-    {
-        bits &= 0x80000000u;
-    }
-    else if (exponent == 0xFFu)
-    {
-        bits = (bits & 0x80000000u) | 0x7F7FFFFFu;
-    }
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
-}
 
 float VU1Interpreter::normalizeResult(float value, uint32_t &laneFlags) const
 {
@@ -1080,6 +1065,8 @@ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &d
         for (uint32_t index = 0; index < usage->vfReadCount; ++index)
         {
             const VfAccess &access = usage->vfRead[index];
+            if (m_vfRegReady[access.reg] <= ready)
+                continue;
             for (uint32_t component = 0; component < 4u; ++component)
             {
                 if ((access.lanes & laneForComponent(component)) != 0u)
@@ -1130,6 +1117,7 @@ void VU1Interpreter::markPairWrites(const DecodedInstructionPair &decoded)
             if ((lowerWrite.lanes & laneForComponent(component)) != 0u)
                 m_vfReady[lowerWrite.reg][component] = m_cycle + latency;
         }
+        m_vfRegReady[lowerWrite.reg] = std::max(m_vfRegReady[lowerWrite.reg], m_cycle + latency);
     }
 
     const VfAccess upperWrite = decoded.upperUsage.vfWrite;
@@ -1143,6 +1131,7 @@ void VU1Interpreter::markPairWrites(const DecodedInstructionPair &decoded)
             if ((upperWrite.lanes & laneForComponent(component)) != 0u)
                 m_vfReady[upperWrite.reg][component] = m_cycle + latency;
         }
+        m_vfRegReady[upperWrite.reg] = std::max(m_vfRegReady[upperWrite.reg], m_cycle + latency);
     }
 
     for (uint32_t bits = static_cast<uint32_t>(decoded.lowerUsage.viWrite) & ~1u; bits != 0u; bits &= bits - 1u)
@@ -1628,17 +1617,23 @@ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t cod
     m_decodedCodeCacheValid = true;
 }
 
-VU1Interpreter::DecodedInstructionPair VU1Interpreter::getDecodedInstructionPairForPc(
+const VU1Interpreter::DecodedInstructionPair &VU1Interpreter::getDecodedInstructionPairForPc(
     const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t pc)
 {
     if ((pc & 7u) != 0u)
-        return decodeInstructionPair(vuCode, pc);
+        {
+        m_decodedScratch = decodeInstructionPair(vuCode, pc);
+        return m_decodedScratch;
+    }
 
     const bool trackedVu1Code = memory != nullptr &&
                                 ((m_unit == Unit::VU1 && vuCode == memory->getVU1Code()) ||
                                  (m_unit == Unit::VU0 && vuCode == memory->getVU0Code()));
     if (!trackedVu1Code)
-        return decodeInstructionPair(vuCode, pc);
+        {
+        m_decodedScratch = decodeInstructionPair(vuCode, pc);
+        return m_decodedScratch;
+    }
 
     const uint64_t generation = m_unit == Unit::VU1 ? memory->getVU1CodeGeneration() : memory->getVU0CodeGeneration();
     if (!m_decodedCodeCacheValid ||
@@ -1651,7 +1646,10 @@ VU1Interpreter::DecodedInstructionPair VU1Interpreter::getDecodedInstructionPair
     }
     const uint32_t pairIndex = pc / 8u;
     if (pairIndex >= kMaxDecodedPairs)
-        return decodeInstructionPair(vuCode, pc);
+        {
+        m_decodedScratch = decodeInstructionPair(vuCode, pc);
+        return m_decodedScratch;
+    }
     return m_decodedCodeCache[pairIndex];
 }
 
@@ -1837,13 +1835,15 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     const uint32_t statStartPc = m_state.pc;
     uint64_t statInstructions = 0, statStalls = 0;
     bool programEnded = false;
+    // advanceOneCycle() commits at each new cycle; only the first cycle of
+    // the run needs an explicit commit.
+    commitReadyPipelines();
     while (m_cycle < budgetEnd && !m_stopRequested)
     {
-        commitReadyPipelines();
         if (m_state.pc + 8u > codeSize)
             break;
 
-        const DecodedInstructionPair decoded = getDecodedInstructionPairForPc(vuCode, codeSize, memory, m_state.pc);
+        const DecodedInstructionPair &decoded = getDecodedInstructionPairForPc(vuCode, codeSize, memory, m_state.pc);
         if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
         {
             reportReservedInstruction(decoded.upperUsage.reserved, decoded.upperUsage.reserved ? decoded.upper : decoded.lower);
