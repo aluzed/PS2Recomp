@@ -65,6 +65,14 @@ namespace ps2recomp
             config.patchCop0 = toml::find_or<bool>(general, "patch_cop0", config.patchCop0);
             config.patchCache = toml::find_or<bool>(general, "patch_cache", config.patchCache);
 
+            if (general.contains("force_recompile") && general.at("force_recompile").is_array())
+            {
+                config.forceRecompile = toml::find<std::vector<std::string>>(general, "force_recompile");
+            }
+            else if (data.contains("force_recompile") && data.at("force_recompile").is_array())
+            {
+                config.forceRecompile = toml::find<std::vector<std::string>>(data, "force_recompile");
+            }
             if (general.contains("stubs") && general.at("stubs").is_array())
             {
                 config.stubImplementations = toml::find<std::vector<std::string>>(general, "stubs");
@@ -297,6 +305,8 @@ namespace ps2recomp
         general["patch_cache"] = config.patchCache;
         general["skip"] = config.skipFunctions;
         general["stubs"] = config.stubImplementations;
+        if (!config.forceRecompile.empty())
+            general["force_recompile"] = config.forceRecompile;
         general["entry_points"] = config.entryPointHints;
         data["general"] = general;
 

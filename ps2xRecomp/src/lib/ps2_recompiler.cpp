@@ -2221,6 +2221,14 @@ namespace ps2recomp
 
     bool PS2Recompiler::isStubFunction(const Function &function) const
     {
+        for (const std::string &pattern : m_config.forceRecompile)
+        {
+            if (!pattern.empty() && pattern.back() == '*'
+                    ? function.name.rfind(pattern.substr(0, pattern.size() - 1u), 0u) == 0u
+                    : function.name == pattern)
+                return false;
+        }
+
         if (m_stubFunctionStarts.contains(function.start))
         {
             return true;

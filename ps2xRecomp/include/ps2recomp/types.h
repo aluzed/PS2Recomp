@@ -187,6 +187,9 @@ namespace ps2recomp
         std::vector<std::string> skipFunctions;
         std::unordered_map<uint32_t, std::string> patches;
         std::vector<std::string> stubImplementations;
+        // Functions recompiled from guest code even when the runtime has a stub
+        // of that name (exact names, or prefixes ending in '*').
+        std::vector<std::string> forceRecompile;
         std::vector<std::string> entryPointHints;
         std::unordered_map<uint32_t, uint32_t> mmioByInstructionAddress;
         std::vector<JumpTable> jumpTables;
