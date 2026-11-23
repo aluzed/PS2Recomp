@@ -216,6 +216,24 @@ struct GSRegisters
 };
 static_assert(sizeof(GSRegisters) == (20u * sizeof(uint64_t)), "GSRegisters layout changed unexpectedly");
 
+// Plain copy of the privileged GS registers (the atomics loaded), as the EE
+// saw them at one point of its timeline.
+using GSRegistersSnapshot = std::array<uint64_t, 20>;
+inline GSRegistersSnapshot snapshotGsRegisters(const GSRegisters &r)
+{
+    return {r.pmode, r.smode1, r.smode2, r.srfsh, r.synch1, r.synch2, r.syncv, r.dispfb1, r.display1, r.dispfb2,
+            r.display2, r.extbuf, r.extdata, r.extwrite, r.bgcolor, r.csr.load(std::memory_order_relaxed),
+            r.vsyncTick.load(std::memory_order_relaxed), r.imr, r.busdir, r.siglblid};
+}
+inline void applyGsRegistersSnapshot(GSRegisters &r, const GSRegistersSnapshot &s)
+{
+    r.pmode = s[0]; r.smode1 = s[1]; r.smode2 = s[2]; r.srfsh = s[3]; r.synch1 = s[4]; r.synch2 = s[5];
+    r.syncv = s[6]; r.dispfb1 = s[7]; r.display1 = s[8]; r.dispfb2 = s[9]; r.display2 = s[10];
+    r.extbuf = s[11]; r.extdata = s[12]; r.extwrite = s[13]; r.bgcolor = s[14];
+    r.csr.store(s[15], std::memory_order_relaxed); r.vsyncTick.store(s[16], std::memory_order_relaxed);
+    r.imr = s[17]; r.busdir = s[18]; r.siglblid = s[19];
+}
+
 // SMODE1 as programmed by the BIOS (SetGsCrt) for analog video modes:
 // videoMode 2 = NTSC, 3 = PAL (sceGsResetGraph OMODE). 0x740834504 is the
 // NTSC value (RC=4, LC=32, CMOD=2); PAL only differs in CMOD=3. Other modes
@@ -340,6 +358,14 @@ public:
     using GifPacketCallback = std::function<void(const uint8_t *, uint32_t)>;
     void setGifPacketCallback(GifPacketCallback cb) { m_gifPacketCallback = std::move(cb); }
     void setGifArbiter(GifArbiter *arbiter) { m_gifArbiter = arbiter; }
+
+    // Guest vsync marker: the display registers at this vsync travel through
+    // the same ordered stream as the GIF input (VU thread queue, then the GS
+    // queue), so the GS presents the buffer they name only after the draws
+    // submitted before the vsync. Called on the EE thread at VBlankStart.
+    using VsyncMarkerCallback = std::function<void(const GSRegistersSnapshot &)>;
+    void setVsyncMarkerCallback(VsyncMarkerCallback cb) { m_vsyncMarkerCallback = std::move(cb); }
+    void submitVsyncMarker();
 
     using Vu1MscalCallback = std::function<void(uint32_t startPC, uint32_t top, uint32_t itop)>;
     void setVu1MscalCallback(Vu1MscalCallback cb) { m_vu1MscalCallback = std::move(cb); }
@@ -470,6 +496,7 @@ public:
             Vif1Data,
             GifPacket,
             GifDrain,
+            VsyncMarker, // data: a GSRegistersSnapshot
         } kind = Kind::Vif1Data;
         std::vector<uint8_t> data;
         GifPathId path = GifPathId::Path3;
@@ -509,6 +536,7 @@ public:
     std::vector<TLBEntry> m_tlbEntries;
 
     GifPacketCallback m_gifPacketCallback;
+    VsyncMarkerCallback m_vsyncMarkerCallback;
     GifArbiter *m_gifArbiter = nullptr;
     Vu1MscalCallback m_vu1MscalCallback;
     Vu1MscntCallback m_vu1MscntCallback;

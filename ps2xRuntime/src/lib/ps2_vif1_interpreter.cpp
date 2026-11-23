@@ -1162,6 +1162,15 @@ void PS2Memory::vif1WorkerLoop(std::function<void()> onWorkerStart)
                 m_gifArbiter->drain();
             }
             break;
+        case Vif1QueueItem::Kind::VsyncMarker:
+            if (m_vsyncMarkerCallback && item.data.size() == sizeof(GSRegistersSnapshot))
+            {
+                GSRegistersSnapshot snapshot;
+                std::memcpy(snapshot.data(), item.data.data(), sizeof(snapshot));
+                std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
+                m_vsyncMarkerCallback(snapshot);
+            }
+            break;
         }
         {
             std::lock_guard<std::mutex> lock(m_vif1QueueMutex);

@@ -1936,6 +1936,10 @@ void EeScheduler::processEvent(const EeEvent &event)
         break;
     case EeEventType::VBlankEnd:
         dispatchIrq(false, 3u);
+        // Scanout of the next field starts here, after the game's vblank
+        // handlers swapped the display buffer; the marker travels in stream
+        // order with the GIF input and the GS scans out when it reaches it.
+        m_runtime.memory().submitVsyncMarker();
         break;
     case EeEventType::Dmac:
         break;

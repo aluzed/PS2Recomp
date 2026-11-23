@@ -130,6 +130,9 @@ public:
     void setRasterBackend(std::unique_ptr<GSRasterBackend> backend);
 
     void processGIFPacket(const uint8_t *data, uint32_t sizeBytes);
+    // Guest vsync marker (PS2Memory::submitVsyncMarker): records the display
+    // registers in stream order; presentation uses the latest recorded set.
+    void markVsync(const std::array<uint64_t, 20> &regs); // GSRegistersSnapshot
     bool processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes);
     void uploadImageNative(uint64_t bitbltbuf,
                            uint64_t trxpos,
@@ -177,11 +180,20 @@ private:
     struct QueuedCommand
     {
         bool isPacket = true;
+        bool isVsync = false; // data: a GSRegistersSnapshot
         std::vector<uint8_t> data;
         uint8_t reg = 0;
         uint64_t value = 0;
     };
     void processGIFPacketNow(const uint8_t *data, uint32_t sizeBytes);
+    void markVsyncNow(const std::array<uint64_t, 20> &regs);
+    // Display registers of the latest processed vsync marker (m_stateMutex),
+    // as a GSRegistersSnapshot.
+    std::array<uint64_t, 20> m_vsyncRegs{};
+    bool m_hasVsyncRegs = false;
+    // True once the hardware GS scans out on vsync markers: the host only
+    // takes the latest image, without waiting for the GS queue.
+    std::atomic<bool> m_vsyncScanout{false};
     void writeRegisterNow(uint8_t regAddr, uint64_t value);
     bool enqueueIfThreaded(QueuedCommand &&command, size_t bytes);
     void workerLoop();
@@ -229,7 +241,7 @@ private:
     bool tryProcessNativeImageUploadPacket(const uint8_t *data, uint32_t sizeBytes);
     GSPrimitiveBatch buildDrawBatch(int vertexCount) const;
     void updatePreferredDisplaySourceForDraw(const GSPrimitiveBatch &batch);
-    GSPresentationRequest buildPresentationRequestUnlocked() const;
+    GSPresentationRequest buildPresentationRequestUnlocked(const GSRegisters &regs) const;
 
 
     GSContext &activeContext();

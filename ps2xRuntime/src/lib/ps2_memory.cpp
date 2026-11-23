@@ -2066,6 +2066,25 @@ void PS2Memory::flushMaskedPath3Packets(bool drainImmediately)
         m_gifArbiter->drain();
 }
 
+void PS2Memory::submitVsyncMarker()
+{
+    if (!m_vsyncMarkerCallback || m_simulateOnly.load(std::memory_order_relaxed))
+        return;
+    const GSRegistersSnapshot snapshot = snapshotGsRegisters(gs_regs);
+    if (m_vif1Threaded.load(std::memory_order_acquire) && !onVif1Thread())
+    {
+        Vif1QueueItem item;
+        item.kind = Vif1QueueItem::Kind::VsyncMarker;
+        item.data = takeVif1Buffer();
+        item.data.resize(sizeof(snapshot));
+        std::memcpy(item.data.data(), snapshot.data(), sizeof(snapshot));
+        enqueueVif1Item(std::move(item));
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
+    m_vsyncMarkerCallback(snapshot);
+}
+
 void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl)
 {
     if (!data || sizeBytes < 16)

@@ -515,19 +515,17 @@ void GS::refreshDisplaySnapshot()
     snapshotVRAM();
 }
 
-GSPresentationRequest GS::buildPresentationRequestUnlocked() const
+GSPresentationRequest GS::buildPresentationRequestUnlocked(const GSRegisters &regs) const
 {
     GSPresentationRequest request{};
-    if (!m_privRegs)
-        return request;
-    request.pmode = m_privRegs->pmode;
-    request.smode2 = m_privRegs->smode2;
-    request.dispfb1 = m_privRegs->dispfb1;
-    request.display1 = m_privRegs->display1;
-    request.dispfb2 = m_privRegs->dispfb2;
-    request.display2 = m_privRegs->display2;
-    request.bgcolor = m_privRegs->bgcolor;
-    request.vsyncTick = m_privRegs->vsyncTick.load(std::memory_order_acquire);
+    request.pmode = regs.pmode;
+    request.smode2 = regs.smode2;
+    request.dispfb1 = regs.dispfb1;
+    request.display1 = regs.display1;
+    request.dispfb2 = regs.dispfb2;
+    request.display2 = regs.display2;
+    request.bgcolor = regs.bgcolor;
+    request.vsyncTick = regs.vsyncTick.load(std::memory_order_acquire);
     request.contextFrames[0] = m_ctx[0].frame;
     request.contextFrames[1] = m_ctx[1].frame;
     request.preferredSource = m_preferredDisplaySourceFrame;
@@ -544,6 +542,8 @@ void GS::setHardwareQuality(uint32_t superSampling, bool highResolutionScanout)
 
 void GS::latchHostPresentationFrame()
 {
+    if (m_parallel && m_vsyncScanout.load(std::memory_order_acquire))
+        return; // the GS scans out on each vsync marker (markVsyncNow)
     waitIdle(); // depends on everything submitted so far (threaded GS)
 
     GSPresentationRequest request{};
@@ -557,13 +557,15 @@ void GS::latchHostPresentationFrame()
             m_hostPresentationWidth = m_hostPresentationHeight = 0u;
             return;
         }
-        request = buildPresentationRequestUnlocked();
-        m_dumpRecorder.recordVsync(*m_privRegs, static_cast<uint32_t>(request.vsyncTick & 1ull));
+        // Fallback before the first vsync marker, and the software backend.
+        const GSRegisters &regs = *m_privRegs;
+        request = buildPresentationRequestUnlocked(regs);
+        m_dumpRecorder.recordVsync(regs, static_cast<uint32_t>(request.vsyncTick & 1ull));
         if (m_parallel)
         {
             std::vector<uint8_t> pixels;
             uint32_t width = 0u, height = 0u;
-            const bool ok = m_parallel->vsync(*m_privRegs, static_cast<uint32_t>(request.vsyncTick & 1ull),
+            const bool ok = m_parallel->vsync(regs, static_cast<uint32_t>(request.vsyncTick & 1ull),
                                               pixels, width, height);
             std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
             if (ok)
@@ -1877,7 +1879,13 @@ void GS::workerLoop()
             command = std::move(m_queue.front());
             m_queue.pop_front();
         }
-        if (command.isPacket)
+        if (command.isVsync)
+        {
+            GSRegistersSnapshot regs;
+            std::memcpy(regs.data(), command.data.data(), sizeof(regs));
+            markVsyncNow(regs);
+        }
+        else if (command.isPacket)
             processGIFPacketNow(command.data.data(), static_cast<uint32_t>(command.data.size()));
         else
             writeRegisterNow(command.reg, command.value);
@@ -1893,6 +1901,50 @@ void GS::workerLoop()
         }
         m_idleCv.notify_all();
     }
+}
+
+void GS::markVsyncNow(const GSRegistersSnapshot &regs)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    m_vsyncRegs = regs;
+    m_hasVsyncRegs = true;
+    if (!m_parallel)
+        return; // software backend: presented by latchHostPresentationFrame
+    // Hardware GS: scan out now, in stream order. Later draws (the next frame
+    // already being drawn into the other buffer) cannot leak into this image.
+    GSRegisters vsyncRegs{};
+    applyGsRegistersSnapshot(vsyncRegs, regs);
+    const uint32_t field = static_cast<uint32_t>(vsyncRegs.vsyncTick.load(std::memory_order_relaxed) & 1ull);
+    m_dumpRecorder.recordVsync(vsyncRegs, field);
+    std::vector<uint8_t> pixels;
+    uint32_t width = 0u, height = 0u;
+    const bool ok = m_parallel->vsync(vsyncRegs, field, pixels, width, height);
+    {
+        std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
+        if (ok)
+        {
+            m_hostPresentationFrame = std::move(pixels);
+            m_hostPresentationWidth = width;
+            m_hostPresentationHeight = height;
+        }
+        m_hasHostPresentationFrame = ok || m_hasHostPresentationFrame;
+    }
+    m_vsyncScanout.store(true, std::memory_order_release);
+}
+
+void GS::markVsync(const GSRegistersSnapshot &regs)
+{
+    if (m_threaded.load(std::memory_order_acquire) && std::this_thread::get_id() != m_workerId)
+    {
+        QueuedCommand command;
+        command.isPacket = true; // accounted as data bytes
+        command.isVsync = true;
+        command.data.resize(sizeof(regs));
+        std::memcpy(command.data.data(), regs.data(), sizeof(regs));
+        if (enqueueIfThreaded(std::move(command), sizeof(regs)))
+            return;
+    }
+    markVsyncNow(regs);
 }
 
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
