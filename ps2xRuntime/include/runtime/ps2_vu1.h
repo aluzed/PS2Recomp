@@ -191,6 +191,21 @@ private:
         bool currentTagEop = false;
     };
 
+    // Register writes are applied immediately (reads stall until ready). The
+    // journal keeps the previous value of recent writes so that a run that
+    // stops mid-program (cycle budget) can move the still-in-flight writes
+    // back into the deferred pipelines, exactly as the hardware state looks.
+    struct WriteJournalEntry
+    {
+        uint64_t readyCycle = 0;
+        float old[4]{};
+        int32_t oldVi = 0;
+        uint8_t kind = 0; // 0 = VF, 1 = VI, 2 = ACC
+        uint8_t reg = 0;
+        uint8_t lanes = 0;
+    };
+    static constexpr uint32_t kWriteJournalSize = 32u;
+
     static constexpr uint32_t kFmacLatency = 4u;
     static constexpr uint32_t kAccForwardLatency = 1u;
     static constexpr uint32_t kMaxFlagEntries = 8u;
@@ -224,6 +239,9 @@ private:
     std::array<uint64_t, 16> m_viLatestWrite{};
     std::array<uint64_t, 4> m_accLatestWrite{};
 
+    std::array<WriteJournalEntry, kWriteJournalSize> m_writeJournal{};
+    uint32_t m_writeJournalHead = 0;
+
     uint64_t m_cycle = 0;
     uint64_t m_nextWriteSequence = 0;
     uint64_t m_efuResourceReady = 0;
@@ -231,6 +249,11 @@ private:
     // skips empty arrays instead of scanning ~50 slots every cycle.
     uint32_t m_pendingFlag = 0, m_pendingEfu = 0, m_pendingStore = 0;
     uint32_t m_pendingVf = 0, m_pendingVi = 0, m_pendingAcc = 0;
+    // Earliest readyCycle per array (UINT64_MAX when empty): commits are
+    // skipped until then.
+    uint32_t m_flagHead = 0; // ring: m_pendingFlag entries from here
+    uint64_t m_minReadyEfu = UINT64_MAX, m_minReadyStore = UINT64_MAX;
+    uint64_t m_minReadyVf = UINT64_MAX, m_minReadyVi = UINT64_MAX, m_minReadyAcc = UINT64_MAX;
     uint32_t m_workingClip = 0;
     uint32_t m_currentUpperInstruction = 0;
     int32_t m_viBranchBackupValue = 0;
@@ -265,10 +288,11 @@ private:
     void applyFmacDest(float *dst, float *result, uint8_t dest);
     void applyFmacDestAcc(float *result, uint8_t dest);
     void normalizeFmacResult(float *result, uint8_t dest, uint8_t laneFlags[4]);
-    bool calculateFmacExactResult(uint32_t component, long double &result) const;
-    uint8_t normalizeFmacExactResult(float &value, long double exactResult) const;
+    bool calculateFmacExactResult(uint32_t component, double &result) const;
+    uint8_t normalizeFmacExactResult(float &value, double exactResult) const;
     uint32_t calculateFmacProductSticky(uint8_t dest) const;
     void updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest, uint32_t extraSticky);
+    FlagPipelineEntry *allocateFlagEntry();
     void queueFsset(uint16_t immediate);
     void queueClip(uint32_t clip);
     void queueFcset(uint32_t clip);
@@ -280,6 +304,8 @@ private:
     void queueAccWrite(uint8_t laneMask, const float value[4], uint32_t latency);
     void startXgkick(uint32_t qwordAddress);
 
+    void journalPairWrites(const DecodedInstructionPair &decoded, uint8_t writtenVi);
+    void deferInFlightWrites();
     void resetScheduler();
     void commitReadyPipelines();
     void advanceOneCycle();
