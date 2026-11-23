@@ -460,9 +460,40 @@ bool PS2Memory::initialize(size_t ramSize)
 void PS2Memory::resetEeTimers() noexcept
 {
     m_eeTimers = {};
+    m_eeTimerPendingCycles = 0;
+    m_eeTimerBudget = 0;
+    m_eeTimerPendingInterrupts = 0;
 }
 
+// Generated code charges cycles per basic block. Timer ticks are additive
+// (the clock remainder carries over), so the cycles are applied in batches:
+// when an enabled compare/overflow interrupt can be reached, at most every
+// kEeTimerBatchCycles, and before any guest access to a timer register or
+// GIF_STAT (flushEeTimers). The guest therefore sees the same counts, flags
+// and interrupt cycles as with per-block updates.
 uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
+{
+    constexpr uint64_t kEeTimerBatchCycles = 2048u;
+    m_eeTimerPendingCycles += eeCycles;
+    if (m_eeTimerPendingCycles < m_eeTimerBudget)
+        return 0u;
+    flushEeTimers();
+    m_eeTimerBudget = std::min<uint64_t>(kEeTimerBatchCycles, cyclesUntilNextEeTimerInterruptNow());
+    const uint32_t interrupts = m_eeTimerPendingInterrupts;
+    m_eeTimerPendingInterrupts = 0u;
+    return interrupts;
+}
+
+void PS2Memory::flushEeTimers() noexcept
+{
+    if (m_eeTimerPendingCycles == 0u)
+        return;
+    const uint64_t cycles = m_eeTimerPendingCycles;
+    m_eeTimerPendingCycles = 0u;
+    m_eeTimerPendingInterrupts |= advanceEeTimersNow(cycles);
+}
+
+uint32_t PS2Memory::advanceEeTimersNow(uint64_t eeCycles) noexcept
 {
     if (eeCycles == 0u)
     {
@@ -539,6 +570,15 @@ uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
 }
 
 uint64_t PS2Memory::cyclesUntilNextEeTimerInterrupt() const noexcept
+{
+    // Relative to now: the batched cycles are not applied yet.
+    if (m_eeTimerPendingInterrupts != 0u)
+        return 1u;
+    const uint64_t raw = cyclesUntilNextEeTimerInterruptNow();
+    return raw > m_eeTimerPendingCycles ? std::max<uint64_t>(1u, raw - m_eeTimerPendingCycles) : 1u;
+}
+
+uint64_t PS2Memory::cyclesUntilNextEeTimerInterruptNow() const noexcept
 {
     uint64_t nearest = std::numeric_limits<uint64_t>::max();
     for (const EeTimer &timer : m_eeTimers)
@@ -1182,6 +1222,12 @@ void PS2Memory::write128(uint32_t address, __m128i value)
 
 bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 {
+    const bool timerOrGifStat = (address >= 0x10000000u && address < 0x10002000u) || address == 0x10003020u;
+    if (timerOrGifStat)
+    {
+        flushEeTimers();
+        m_eeTimerBudget = 0u; // mode/count/compare may change: recompute at the next charge
+    }
     size_t timerIndex = 0u;
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
@@ -2338,6 +2384,8 @@ int PS2Memory::pollDmaRegisters()
 
 uint32_t PS2Memory::readIORegister(uint32_t address)
 {
+    if ((address >= 0x10000000u && address < 0x10002000u) || address == 0x10003020u)
+        flushEeTimers();
     size_t timerIndex = 0u;
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))

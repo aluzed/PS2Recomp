@@ -325,6 +325,8 @@ public:
     // returned mask uses bits 0..3 for newly raised TIM0..TIM3 interrupts.
     uint32_t advanceEeTimers(uint64_t eeCycles) noexcept;
     [[nodiscard]] uint64_t cyclesUntilNextEeTimerInterrupt() const noexcept;
+    // Applies the EE cycles batched by advanceEeTimers (see ps2_memory.cpp).
+    void flushEeTimers() noexcept;
     void resetEeTimers() noexcept;
 
     using GifPacketCallback = std::function<void(const uint8_t *, uint32_t)>;
@@ -397,6 +399,11 @@ public:
     std::atomic<uint64_t> m_vu1CodeGeneration{0};
     // I/O registers
     std::unordered_map<uint32_t, uint32_t> m_ioRegisters;
+    uint64_t m_eeTimerPendingCycles = 0;      // charged but not yet applied to the timers
+    uint64_t m_eeTimerBudget = 0;             // apply once pending reaches this
+    uint32_t m_eeTimerPendingInterrupts = 0;  // raised during a flush outside advanceEeTimers
+    uint32_t advanceEeTimersNow(uint64_t eeCycles) noexcept;
+    uint64_t cyclesUntilNextEeTimerInterruptNow() const noexcept;
 
     // Registers
     GSRegisters gs_regs;
