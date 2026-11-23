@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstdio>
 #include "runtime/gs/gs_parallel_bridge.h"
 
 #include "runtime/ps2_memory.h"
@@ -234,6 +236,33 @@ bool GSParallelBridge::vsync(const GSRegisters &regs, uint32_t field,
     const auto *mapped = static_cast<const uint8_t *>(
         m_impl->device.map_host_buffer(*buffer, Vulkan::MEMORY_ACCESS_READ_BIT));
     pixels.assign(mapped, mapped + bytes);
+    // PS2X_GS_ALPHA_STATS=1: print a histogram of the raw scanout alpha (development:
+    // can the cleared background be told apart from drawn pixels?).
+    static const bool s_alphaStats = [] { const char *e = std::getenv("PS2X_GS_ALPHA_STATS"); return e && *e == '1'; }();
+    if (s_alphaStats)
+    {
+        static uint32_t s_frame = 0u;
+        if ((++s_frame % 120u) == 0u)
+        {
+            uint32_t hist[8] = {};
+            for (size_t i = 3; i < pixels.size(); i += 4)
+                ++hist[pixels[i] >> 5];
+            std::cerr << "[gs:alpha] frame " << s_frame << " " << width << "x" << height << " alpha/32 histogram:";
+            for (uint32_t h : hist)
+                std::cerr << " " << h;
+            const uint8_t *c = pixels.data();
+            std::cerr << " | corner rgba=" << int(c[0]) << "," << int(c[1]) << "," << int(c[2]) << "," << int(c[3]) << std::endl;
+            if (s_frame == 7200u)
+            {
+                if (FILE *f = std::fopen("gs_raw_7200.rgba", "wb"))
+                {
+                    std::fwrite(pixels.data(), 1, pixels.size(), f);
+                    std::fclose(f);
+                    std::cerr << "[gs:alpha] raw frame written to gs_raw_7200.rgba" << std::endl;
+                }
+            }
+        }
+    }
     // The scanout keeps PS2 alpha (0x80 = 1.0); the host blit must be opaque.
     for (size_t i = 3; i < pixels.size(); i += 4)
         pixels[i] = 0xFFu;
