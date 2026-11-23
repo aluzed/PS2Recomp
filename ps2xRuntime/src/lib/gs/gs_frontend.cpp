@@ -536,6 +536,12 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     return request;
 }
 
+void GS::setHardwareQuality(uint32_t superSampling, bool highResolutionScanout)
+{
+    if (m_parallel)
+        m_parallel->setQuality(superSampling, highResolutionScanout);
+}
+
 void GS::latchHostPresentationFrame()
 {
     GSPresentationRequest request{};

@@ -131,6 +131,8 @@ public:
     bool isDebugHistoryPaused() const;
     void setDebugHistoryPaused(bool paused);
     bool getPreferredDisplaySource(GSFrameReg &outSource, uint32_t &outDestFbp) const;
+    // Hardware GS internal resolution (no effect with the CPU GS).
+    void setHardwareQuality(uint32_t superSampling, bool highResolutionScanout);
     void latchHostPresentationFrame();
     bool copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
                                           uint32_t &outWidth,

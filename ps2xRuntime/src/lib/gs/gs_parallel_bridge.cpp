@@ -16,6 +16,7 @@ void GSParallelBridge::transfer(uint32_t, const uint8_t *, uint32_t) {}
 void GSParallelBridge::writeRegister(uint8_t, uint64_t) {}
 void GSParallelBridge::imageUpload(uint64_t, uint64_t, uint64_t, uint64_t, const uint8_t *, uint32_t) {}
 bool GSParallelBridge::vsync(const GSRegisters &, uint32_t, std::vector<uint8_t> &, uint32_t &, uint32_t &) { return false; }
+void GSParallelBridge::setQuality(uint32_t, bool) {}
 
 #else
 
@@ -87,6 +88,7 @@ bool GSParallelBridge::initialize(const uint8_t *initialVram, uint32_t vramSize)
 
     ParallelGS::GSOptions options{};
     options.vram_size = vramSize;
+    options.dynamic_super_sampling = true; // the settings menu changes it in flight
     if (!m_impl->gs.init(&m_impl->device, options))
     {
         std::cerr << "[gs:parallel] GSInterface init failed" << std::endl;
@@ -168,6 +170,14 @@ bool GSParallelBridge::vsync(const GSRegisters &regs, uint32_t field,
     for (size_t i = 0; i < 15u; ++i)
         priv.qwords_lo[i * 2u] = low[i];
 
+    const uint32_t requested = m_requestedSuperSampling.load(std::memory_order_relaxed);
+    if (requested != m_appliedSuperSampling)
+    {
+        m_impl->gs.set_super_sampling_rate(static_cast<ParallelGS::SuperSampling>(requested), true, false);
+        m_appliedSuperSampling = requested;
+        std::cerr << "[gs:parallel] super sampling x" << requested << std::endl;
+    }
+
     ParallelGS::VSyncInfo info{};
     info.phase = field & 1u;
     info.dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -176,6 +186,8 @@ bool GSParallelBridge::vsync(const GSRegisters &regs, uint32_t field,
     info.force_progressive = true;
     info.anti_blur = true;
     info.adapt_to_internal_horizontal_resolution = true;
+    // Needs 4x super sampling or more (paraLLEl-GS), and force_progressive.
+    info.high_resolution_scanout = m_appliedSuperSampling >= 4u && m_requestedHighResolution.load(std::memory_order_relaxed);
 
     m_impl->gs.flush();
     ParallelGS::ScanoutResult result = m_impl->gs.vsync(info);
@@ -227,6 +239,15 @@ bool GSParallelBridge::vsync(const GSRegisters &regs, uint32_t field,
         pixels[i] = 0xFFu;
     m_impl->device.unmap_host_buffer(*buffer, Vulkan::MEMORY_ACCESS_READ_BIT);
     return true;
+}
+
+void GSParallelBridge::setQuality(uint32_t superSampling, bool highResolutionScanout)
+{
+    uint32_t level = 1u;
+    while (level < 16u && level < superSampling)
+        level <<= 1;
+    m_requestedSuperSampling.store(level, std::memory_order_relaxed);
+    m_requestedHighResolution.store(highResolutionScanout, std::memory_order_relaxed);
 }
 
 #endif // PS2X_ENABLE_PARALLEL_GS

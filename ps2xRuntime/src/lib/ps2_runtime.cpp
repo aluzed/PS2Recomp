@@ -1,5 +1,6 @@
 #include "ps2_runtime.h"
 #include <cstdlib>
+#include <cmath>
 #include "runtime/vu/vu1_kzvu_bridge.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
@@ -452,13 +453,28 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     s_lastWidth = width;
     s_lastHeight = height;
 
+    // High-resolution scanout (hardware GS super sampling) can exceed the
+    // texture: grow it, keeping its filter.
+    if (width > static_cast<uint32_t>(tex.width) || height > static_cast<uint32_t>(tex.height))
+    {
+        const int newWidth = std::max<int>(tex.width, static_cast<int>(width));
+        const int newHeight = std::max<int>(tex.height, static_cast<int>(height));
+        UnloadTexture(tex);
+        Image grown = GenImageColor(newWidth, newHeight, BLACK);
+        tex = LoadTextureFromImage(grown);
+        UnloadImage(grown);
+        rt->onPresentationTextureRecreated(tex);
+    }
+    const size_t texBytes = static_cast<size_t>(tex.width) * static_cast<size_t>(tex.height) * 4u;
+    if (s_uploadBuffer.size() != texBytes)
+        s_uploadBuffer.assign(texBytes, 0u);
     std::fill(s_uploadBuffer.begin(), s_uploadBuffer.end(), 0u);
     if (!s_scratch.empty() && width != 0u && height != 0u)
     {
-        const uint32_t copyWidth = std::min<uint32_t>(width, FB_WIDTH);
-        const uint32_t copyHeight = std::min<uint32_t>(height, FB_HEIGHT);
+        const uint32_t copyWidth = std::min<uint32_t>(width, static_cast<uint32_t>(tex.width));
+        const uint32_t copyHeight = std::min<uint32_t>(height, static_cast<uint32_t>(tex.height));
         const size_t srcRowBytes = static_cast<size_t>(width) * 4u;
-        const size_t dstRowBytes = static_cast<size_t>(FB_WIDTH) * 4u;
+        const size_t dstRowBytes = static_cast<size_t>(tex.width) * 4u;
         const size_t copyRowBytes = static_cast<size_t>(copyWidth) * 4u;
         for (uint32_t y = 0; y < copyHeight; ++y)
         {
@@ -507,6 +523,23 @@ PS2Runtime::PS2Runtime()
     m_guestHeapConfigured = false;
     m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
     m_asyncCallbackStackTop = PS2_RAM_SIZE;
+}
+
+void PS2Runtime::setHostPresentationOptions(const HostPresentationOptions &options)
+{
+    std::lock_guard lock(m_presentationMutex);
+    m_presentation = options;
+}
+
+PS2Runtime::HostPresentationOptions PS2Runtime::hostPresentationOptions() const
+{
+    std::lock_guard lock(m_presentationMutex);
+    return m_presentation;
+}
+
+void PS2Runtime::onPresentationTextureRecreated(Texture2D &tex)
+{
+    SetTextureFilter(tex, m_appliedSmoothFilter ? TEXTURE_FILTER_BILINEAR : TEXTURE_FILTER_POINT);
 }
 
 void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
@@ -2473,12 +2506,30 @@ void PS2Runtime::run()
         // stretch the source into it instead of drawing it at its pixel size
         // (which showed field-mode games in the middle half of the window).
         constexpr float kDisplayAspect = 4.0f / 3.0f;
+        const HostPresentationOptions presentation = hostPresentationOptions();
+        if (presentation.smooth != m_appliedSmoothFilter)
+        {
+            SetTextureFilter(frameTex, presentation.smooth ? TEXTURE_FILTER_BILINEAR : TEXTURE_FILTER_POINT);
+            m_appliedSmoothFilter = presentation.smooth;
+        }
         float dstWidth = screenWidth;
         float dstHeight = screenWidth / kDisplayAspect;
         if (dstHeight > screenHeight)
         {
             dstHeight = screenHeight;
             dstWidth = screenHeight * kDisplayAspect;
+        }
+        if (presentation.scaling == HostScaling::Stretch)
+        {
+            dstWidth = screenWidth;
+            dstHeight = screenHeight;
+        }
+        else if (presentation.scaling == HostScaling::Integer)
+        {
+            // Largest whole multiple of a 640x480 (4:3) picture that fits.
+            const float scale = std::max(1.0f, std::floor(std::min(screenWidth / 640.0f, screenHeight / 480.0f)));
+            dstWidth = 640.0f * scale;
+            dstHeight = 480.0f * scale;
         }
         const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
         const Rectangle dstRect{

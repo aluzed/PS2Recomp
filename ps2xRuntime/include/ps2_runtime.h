@@ -308,6 +308,22 @@ public:
     // Game-layer overlay drawn on the host thread every presented frame, after
     // the game picture and the debug UI, inside BeginDrawing/EndDrawing (raylib
     // screen coordinates). For player-facing menus such as settings.
+    // How the presented picture fills the window (host thread applies it).
+    enum class HostScaling : uint8_t
+    {
+        Fit,     // 4:3, as large as fits (default)
+        Stretch, // fill the window
+        Integer, // largest whole multiple of 640x480
+    };
+    struct HostPresentationOptions
+    {
+        HostScaling scaling = HostScaling::Fit;
+        bool smooth = true; // bilinear filtering of the picture (false: sharp pixels)
+    };
+    void setHostPresentationOptions(const HostPresentationOptions &options);
+    HostPresentationOptions hostPresentationOptions() const;
+    void onPresentationTextureRecreated(struct Texture &tex);
+
     using HostOverlayCallback = void (*)(PS2Runtime &runtime, void *userData);
     void setHostOverlayCallback(HostOverlayCallback callback, void *userData)
     {
@@ -533,6 +549,9 @@ private:
     std::atomic<uint32_t> m_missingFunctionPolicy{static_cast<uint32_t>(MissingFunctionPolicy::ContinueToTarget)};
     std::atomic<bool> m_missingFunctionReported{false};
     std::atomic<bool> m_stopRequested{false};
+    mutable std::mutex m_presentationMutex;
+    HostPresentationOptions m_presentation{};
+    bool m_appliedSmoothFilter = false; // the texture starts with raylib's default (point)
     HostOverlayCallback m_hostOverlayCallback = nullptr;
     void *m_hostOverlayUserData = nullptr;
     DebugUiCallback m_debugUiInitCallback = nullptr;

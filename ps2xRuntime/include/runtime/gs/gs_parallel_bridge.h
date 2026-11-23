@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -29,6 +30,11 @@ public:
     void imageUpload(uint64_t bitbltbuf, uint64_t trxpos, uint64_t trxreg, uint64_t trxdir,
                      const uint8_t *data, uint32_t sizeBytes);
 
+    // Internal resolution: super sampling factor (1, 2, 4, 8, 16) and, from 4x,
+    // a higher-resolution scanout (twice the PS2 picture size). Any thread;
+    // applied at the next vsync.
+    void setQuality(uint32_t superSampling, bool highResolutionScanout);
+
     // Scans out the current frame. Pixels are tightly packed RGBA8.
     bool vsync(const GSRegisters &privRegs, uint32_t field,
                std::vector<uint8_t> &pixels, uint32_t &width, uint32_t &height);
@@ -36,4 +42,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
+    std::atomic<uint32_t> m_requestedSuperSampling{1};
+    std::atomic<bool> m_requestedHighResolution{false};
+    uint32_t m_appliedSuperSampling = 1;
 };
