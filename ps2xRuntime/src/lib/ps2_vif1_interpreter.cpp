@@ -1,4 +1,6 @@
 // Based on Blackline Interactive implementation
+#include <algorithm>
+#include <cstdlib>
 #include "runtime/ps2_memory.h"
 #include <cstring>
 
@@ -29,6 +31,153 @@ enum VIFCmd : uint8_t
 namespace
 {
     constexpr uint8_t kGifFmtImage = 2u;
+
+    // Bytes of source data per vector, by VN<<2|VL (PCSX2 nVifT).
+    constexpr uint8_t kVifUnpackSourceBytes[16] = {4, 2, 1, 0, 8, 4, 2, 0, 12, 6, 3, 0, 16, 8, 4, 2};
+
+    bool legacyVif1UnpackRequested()
+    {
+        static const bool legacy = []
+        {
+            const char *v = std::getenv("PS2X_VIF_UNPACK");
+            return v && std::strcmp(v, "legacy") == 0;
+        }();
+        return legacy;
+    }
+
+    // VIF1 UNPACK with PCSX2's semantics (pcsx2/Vif_Unpack.cpp). Ported from
+    // PS2Recomp-Fixer / KillzoneRecomp patch 0010 (GPL-3.0):
+    //  - WL = 0 means 256; fill mode is CL < WL: the source only advances for
+    //    the first CL writes of a block, the other writes reuse the next vector
+    //    (normally masked to ROW/COL); skipping mode adds (CL - WL) qwords.
+    //  - S-xx broadcasts; V2 writes x,y,x,y; V3 reads four elements (W is the
+    //    next vector's first element); V4-5 expands 5:5:5:1 to 8-bit channels
+    //    and ignores STMOD.
+    //  - STMOD 1 adds ROW, 2 adds and stores ROW, 3 stores the data into ROW.
+    //  - Mask row and COL are selected by the write cycle (min(cl, 3)).
+    //  - The destination wraps in VU memory.
+    // Reads past dataBytes return zero.
+    void vif1UnpackPcsx2(uint8_t *vuMem, uint32_t vuMemSize, VIFRegisters &regs, uint32_t cmd,
+                         const uint8_t *data, uint32_t dataBytes)
+    {
+        const uint32_t upk = (cmd >> 24) & 0x1Fu;
+        const uint32_t vnvl = upk & 0xFu;
+        const bool doMask = (upk & 0x10u) != 0u;
+        const bool usn = (cmd & 0x4000u) != 0u;
+        const uint32_t vsize = kVifUnpackSourceBytes[vnvl];
+        if (vsize == 0u)
+            return;
+        uint32_t num = (cmd >> 16) & 0xFFu;
+        if (num == 0u)
+            num = 256u;
+        // CYCLE = 0 (reset state, no STCYCL yet) is a plain linear transfer.
+        const uint32_t cl = (regs.cycle & 0xFFFFu) == 0u ? 1u : (regs.cycle & 0xFFu);
+        const uint32_t wl = (regs.cycle & 0xFFFFu) == 0u ? 1u : (((regs.cycle >> 8) & 0xFFu) ? ((regs.cycle >> 8) & 0xFFu) : 256u);
+        const bool isFill = cl < wl;
+        const uint32_t mode = (vnvl == 15u) ? 0u : (regs.mode & 3u);
+        uint32_t addr = cmd & 0x3FFu;
+        if ((cmd & 0x8000u) != 0u)
+            addr += regs.tops;
+        addr = (addr << 4) & (vuMemSize - 16u);
+        const uint32_t skipBytes = isFill ? 0u : (cl - wl) * 16u;
+        const uint32_t vl = vnvl & 3u;
+        const uint32_t vn = vnvl >> 2;
+
+        auto element = [&](uint32_t offset, uint32_t index) -> uint32_t
+        {
+            const uint32_t bytes = 4u >> vl;
+            const uint32_t at = offset + index * bytes;
+            if (at + bytes > dataBytes)
+                return 0u;
+            if (vl == 0u)
+            {
+                uint32_t v;
+                std::memcpy(&v, data + at, 4);
+                return v;
+            }
+            if (vl == 1u)
+            {
+                uint16_t v;
+                std::memcpy(&v, data + at, 2);
+                return usn ? static_cast<uint32_t>(v) : static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(v)));
+            }
+            const uint8_t v = data[at];
+            return usn ? static_cast<uint32_t>(v) : static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(v)));
+        };
+
+        uint32_t src = 0u;
+        uint32_t vcl = 0u;
+        for (uint32_t n = 0; n < num; ++n)
+        {
+            uint32_t in[4];
+            if (vnvl == 15u)
+            {
+                uint16_t v = 0;
+                if (src + 2u <= dataBytes)
+                    std::memcpy(&v, data + src, 2);
+                in[0] = (v & 0x001Fu) << 3;
+                in[1] = (v & 0x03E0u) >> 2;
+                in[2] = (v & 0x7C00u) >> 7;
+                in[3] = (v & 0x8000u) >> 8;
+            }
+            else if (vn == 0u)
+            {
+                in[0] = in[1] = in[2] = in[3] = element(src, 0);
+            }
+            else if (vn == 1u)
+            {
+                in[0] = in[2] = element(src, 0);
+                in[1] = in[3] = element(src, 1);
+            }
+            else
+            {
+                for (uint32_t c = 0; c < 4u; ++c)
+                    in[c] = element(src, c);
+            }
+
+            uint32_t *dest = reinterpret_cast<uint32_t *>(vuMem + (addr & (vuMemSize - 16u)));
+            const uint32_t maskCycle = vcl < 3u ? vcl : 3u;
+            for (uint32_t f = 0; f < 4u; ++f)
+            {
+                const uint32_t m = doMask ? (regs.mask >> (maskCycle * 8u + f * 2u)) & 3u : 0u;
+                switch (m)
+                {
+                case 0:
+                    switch (mode)
+                    {
+                    case 1: dest[f] = in[f] + regs.row[f]; break;
+                    case 2: regs.row[f] += in[f]; dest[f] = regs.row[f]; break;
+                    case 3: regs.row[f] = in[f]; dest[f] = in[f]; break;
+                    default: dest[f] = in[f]; break;
+                    }
+                    break;
+                case 1: dest[f] = regs.row[f]; break;
+                case 2: dest[f] = regs.col[maskCycle]; break;
+                default: break; // write protect
+                }
+            }
+
+            addr += 16u;
+            ++vcl;
+            if (isFill)
+            {
+                if (vcl <= cl)
+                    src += vsize;
+                else if (vcl == wl)
+                    vcl = 0u;
+            }
+            else
+            {
+                src += vsize;
+                if (vcl >= wl)
+                {
+                    addr += skipBytes;
+                    vcl = 0u;
+                }
+            }
+        }
+        regs.num = 0u;
+    }
 
     uint32_t pendingGifImageQwc(const uint8_t *data, uint32_t sizeBytes)
     {
@@ -571,6 +720,23 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 vuAddr = (vuAddr + (vif1_regs.tops & 0x3FFu)) & 0x3FFu;
 
             const bool zeroExtend = (imm & 0x4000u) != 0u;
+
+            if (!legacyVif1UnpackRequested())
+            {
+                // Source size as PCSX2: fill mode reads CL vectors per WL block (WL = 0 means 256).
+                const bool linear = (vif1_regs.cycle & 0xFFFFu) == 0u;
+                const uint32_t pcl = linear ? 1u : (vif1_regs.cycle & 0xFFu);
+                const uint32_t pwl = linear ? 1u : (((vif1_regs.cycle >> 8) & 0xFFu) ? ((vif1_regs.cycle >> 8) & 0xFFu) : 256u);
+                const uint32_t srcVectors = (pcl < pwl) ? pcl * (writeVectorCount / pwl) + std::min(writeVectorCount % pwl, pcl)
+                                                        : writeVectorCount;
+                const uint32_t srcBytes = (srcVectors * kVifUnpackSourceBytes[opcode & 0xFu] + 3u) & ~3u;
+                if (m_vu1Data && pos + srcBytes <= sizeBytes)
+                    vif1UnpackPcsx2(m_vu1Data, PS2_VU1_DATA_SIZE, vif1_regs, cmd, data + pos, srcBytes);
+                pos += srcBytes;
+                if (pos > sizeBytes)
+                    break;
+                continue;
+            }
 
             if (m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes)
             {
