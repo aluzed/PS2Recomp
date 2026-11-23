@@ -56,6 +56,7 @@ namespace ps2recomp
         void setEmitInstructionComments(bool emitInstructionComments);
         void setReporter(RecompilerReporter *reporter);
         void setJalrIsCall(bool jalrIsCall) { m_jalrIsCall = jalrIsCall; }
+        void setRegisterLocals(bool registerLocals) { m_registerLocals = registerLocals; }
 
         AnalysisResult collectInternalBranchTargets(const Function &function,
                                                   const std::vector<Instruction> &instructions,
@@ -67,6 +68,7 @@ namespace ps2recomp
         std::unordered_map<uint32_t, std::string> m_relocationCallNames;
         std::unordered_map<uint32_t, std::vector<uint32_t>> m_configJumpTableTargetsByAddress;
         bool m_jalrIsCall = false;
+        bool m_registerLocals = false;
         std::unordered_map<uint32_t, std::vector<uint32_t>> m_resumeEntryTargetsByOwner;
         // Owned copy: callers (and tests) may pass temporaries.
         std::vector<Section> m_sections;

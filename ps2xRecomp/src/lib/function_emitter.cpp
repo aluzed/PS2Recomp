@@ -5,6 +5,7 @@
 #include "ps2recomp/r5900_decoder.h"
 #include "ps2recomp/recompiler_reporter.h"
 #include "ps2recomp/types.h"
+#include "ps2recomp/register_locals.h"
 
 #include <algorithm>
 #include <sstream>
@@ -234,6 +235,8 @@ namespace ps2recomp
         }
 
         ss << "}\n";
+        if (cg.m_registerLocals)
+            return applyRegisterLocals(ss.str());
         return ss.str();
     }
 }

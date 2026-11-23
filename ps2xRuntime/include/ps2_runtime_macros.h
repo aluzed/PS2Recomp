@@ -1126,6 +1126,14 @@ static inline void Ps2SetGprLow64(R5900Context *ctx, int reg, __m128i new_low)
 
 #define SET_GPR_S64(ctx_ptr, reg_idx, val) SET_GPR_U64(ctx_ptr, reg_idx, val)
 
+// Register-locals code (ps2xRecomp register_locals.h): a cached GPR's low 64
+// bits live in a uint64_t local; same extension as the SET_GPR_* forms above.
+#define PS2_LSET_U32(var, val) do { (var) = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(val))); } while (0)
+#define PS2_LSET_S32(var, val) do { (var) = static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(val))); } while (0)
+#define PS2_LSET_ZE32(var, val) do { (var) = static_cast<uint64_t>(static_cast<uint32_t>(val)); } while (0)
+#define PS2_LSET_U64(var, val) do { (var) = static_cast<uint64_t>(val); } while (0)
+#define PS2_LSET_S64(var, val) do { (var) = static_cast<uint64_t>(static_cast<int64_t>(val)); } while (0)
+
 #define SET_GPR_VEC(ctx_ptr, reg_idx, val) \
     do                                     \
     {                                      \

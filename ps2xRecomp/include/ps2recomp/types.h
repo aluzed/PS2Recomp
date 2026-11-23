@@ -193,6 +193,9 @@ namespace ps2recomp
         // Treat JALR as a call (returns at +8) instead of promoting every
         // instruction of the function to an indirect-jump fallback entry.
         bool jalrIsCall = false;
+        // Keep guest GPRs in C++ locals inside generated functions
+        // (register_locals.h).
+        bool registerLocals = false;
         std::vector<std::string> entryPointHints;
         std::unordered_map<uint32_t, uint32_t> mmioByInstructionAddress;
         std::vector<JumpTable> jumpTables;
