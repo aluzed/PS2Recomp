@@ -1614,10 +1614,15 @@ void GS::vertexKick(bool drawing)
 
     if (drawing && m_backend)
     {
-        GSPrimitiveBatch batch = buildDrawBatch(needed);
-        updatePreferredDisplaySourceForDraw(batch);
-        if (!m_parallel) // the hardware GS rasterizes from the forwarded stream
+        // With the hardware GS, rasterization and scanout (PMODE/DISPFB) come
+        // from the forwarded stream: building the CPU batch (texture and CLUT
+        // decode included) would be wasted work.
+        if (!m_parallel)
+        {
+            GSPrimitiveBatch batch = buildDrawBatch(needed);
+            updatePreferredDisplaySourceForDraw(batch);
             m_backend->Submit(batch);
+        }
         recordDrawDebugEventUnlocked(needed);
     }
 
