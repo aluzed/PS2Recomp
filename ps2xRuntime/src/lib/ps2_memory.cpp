@@ -2075,6 +2075,7 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
         // Keep GIF input in order with the VU thread's PATH1/PATH2 output.
         Vif1QueueItem item;
         item.kind = Vif1QueueItem::Kind::GifPacket;
+        item.data = takeVif1Buffer();
         item.data.assign(data, data + sizeBytes);
         item.path = pathId;
         item.drainImmediately = drainImmediately;

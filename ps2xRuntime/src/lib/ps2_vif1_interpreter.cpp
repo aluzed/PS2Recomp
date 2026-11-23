@@ -1022,20 +1022,24 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
     Vif1QueueItem item;
     item.kind = Vif1QueueItem::Kind::Vif1Data;
     // Copy now: the game reuses its DMA buffers once the transfer is done.
+    item.data = takeVif1Buffer();
     item.data.assign(data, data + sizeBytes);
     enqueueVif1Item(std::move(item));
 }
 
+std::vector<uint8_t> PS2Memory::takeVif1Buffer()
+{
+    std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
+    if (m_vif1FreeBuffers.empty())
+        return {};
+    std::vector<uint8_t> buffer = std::move(m_vif1FreeBuffers.back());
+    m_vif1FreeBuffers.pop_back();
+    buffer.clear();
+    return buffer;
+}
+
 void PS2Memory::enqueueVif1Item(Vif1QueueItem &&item)
 {
-    {
-        std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
-        if (!m_vif1FreeBuffers.empty() && item.data.capacity() == 0u)
-        {
-            item.data = std::move(m_vif1FreeBuffers.back());
-            m_vif1FreeBuffers.pop_back();
-        }
-    }
     const size_t bytes = item.data.size() + 16u;
     constexpr size_t kMaxQueuedBytes = 16u * 1024u * 1024u;
     std::unique_lock<std::mutex> lock(m_vif1QueueMutex);
@@ -1161,7 +1165,7 @@ void PS2Memory::vif1WorkerLoop(std::function<void()> onWorkerStart)
             std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
             m_vif1QueuedBytes -= item.data.size() + 16u;
             ++m_vif1Completed;
-            if (m_vif1FreeBuffers.size() < 64u && item.data.capacity() != 0u)
+            if (m_vif1FreeBuffers.size() < 256u && item.data.capacity() != 0u)
             {
                 item.data.clear();
                 m_vif1FreeBuffers.push_back(std::move(item.data));

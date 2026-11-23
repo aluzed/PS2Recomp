@@ -279,7 +279,21 @@ public:
     void run();
     void requestStop();
     void postEvent(EeEvent event);
-    [[nodiscard]] bool checkpointDue(uint32_t cycles = kGeneratedCheckpointCycles) noexcept;
+    // Called by generated code at every basic block / dispatch. Fast path:
+    // count the cycles and compare with m_fastUntilCycle, the first cycle at
+    // which anything can be due (next deadline, end of time slice, possible
+    // timer interrupt, at most kFastCheckpointCycles ahead). Timers and IOP get
+    // the counted cycles on the slow path.
+    [[nodiscard]] bool checkpointDue(uint32_t cycles = kGeneratedCheckpointCycles) noexcept
+    {
+        const uint64_t elapsed = cycles != 0u ? cycles : 1u;
+        m_eeCycle += elapsed;
+        m_unaccountedCycles += elapsed;
+        if (m_eeCycle < m_fastUntilCycle && !m_checkpointPending.load(std::memory_order_relaxed))
+            return false;
+        return checkpointDueSlow();
+    }
+    static constexpr uint64_t kFastCheckpointCycles = 256u;
     void accountCycles(uint32_t cycles) noexcept;
     [[nodiscard]] bool isExecutingGuest() const noexcept;
 
@@ -443,6 +457,10 @@ private:
     bool m_insideInterrupt = false;
     uint32_t m_pendingEeTimerInterrupts = 0;
     uint64_t m_eeCycle = 0;
+    uint64_t m_unaccountedCycles = 0; // counted in m_eeCycle, not yet given to timers / IOP
+    uint64_t m_fastUntilCycle = 0;    // checkpointDue() fast path below this cycle
+    bool checkpointDueSlow() noexcept;
+    void flushAccounting() noexcept;
     uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;
     std::thread::id m_executorThread{};
     std::atomic<bool> m_running{false};

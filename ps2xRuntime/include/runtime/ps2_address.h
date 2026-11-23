@@ -52,6 +52,13 @@ static inline constexpr bool Ps2IsPhysicalSpecialAddress(uint32_t physAddr)
 
 static inline constexpr bool Ps2IsSpecialAddress(uint32_t addr)
 {
+    // Main RAM through any of its views (physical, uncached mirror 0x20000000,
+    // kseg0 0x80000000, kseg1 0xA0000000) once bits 31 and 29 are cleared: the
+    // case of almost every access, decided with one compare. Same result as the
+    // checks below, which never classify RAM as special (idea from the
+    // gow-native-pc port, patch 30).
+    if ((addr & 0x5FFFFFFFu) < PS2_RAM_SIZE)
+        return false;
     if (Ps2IsKseg23Address(addr))
         return true;
 

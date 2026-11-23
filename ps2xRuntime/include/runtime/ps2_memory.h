@@ -330,6 +330,11 @@ public:
     [[nodiscard]] uint64_t cyclesUntilNextEeTimerInterrupt() const noexcept;
     // Applies the EE cycles batched by advanceEeTimers (see ps2_memory.cpp).
     void flushEeTimers() noexcept;
+    // EE cycles that advanceEeTimers can take before a timer interrupt may be due.
+    uint64_t eeTimerCyclesUntilFlush() const noexcept
+    {
+        return m_eeTimerBudget > m_eeTimerPendingCycles ? m_eeTimerBudget - m_eeTimerPendingCycles : 0u;
+    }
     void resetEeTimers() noexcept;
 
     using GifPacketCallback = std::function<void(const uint8_t *, uint32_t)>;
@@ -464,6 +469,7 @@ public:
         bool path2DirectHl = false;
     };
     void enqueueVif1Item(Vif1QueueItem &&item);
+    std::vector<uint8_t> takeVif1Buffer(); // a recycled buffer, empty
     std::deque<Vif1QueueItem> m_vif1Queue;
     std::vector<std::vector<uint8_t>> m_vif1FreeBuffers;
     size_t m_vif1QueuedBytes = 0;

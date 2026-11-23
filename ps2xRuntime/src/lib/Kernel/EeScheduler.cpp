@@ -113,6 +113,8 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
     m_insideInterrupt = false;
     m_pendingEeTimerInterrupts = 0u;
     m_eeCycle = 0u;
+    m_unaccountedCycles = 0u;
+    m_fastUntilCycle = 0u;
     m_sliceEndCycle = kDefaultTimeSliceCycles;
     m_stopRequested.store(false, std::memory_order_release);
     m_checkpointPending.store(false, std::memory_order_release);
@@ -355,9 +357,10 @@ void EeScheduler::postEvent(EeEvent event)
     m_eventCv.notify_one();
 }
 
-bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
+bool EeScheduler::checkpointDueSlow() noexcept
 {
-    accountCycles(cycles);
+    flushAccounting();
+    m_fastUntilCycle = 0u;
 
     if (m_checkpointPending.load(std::memory_order_acquire) ||
         m_stopRequested.load(std::memory_order_acquire))
@@ -372,20 +375,26 @@ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
         return true;
     }
 
-    if (m_eeCycle < m_sliceEndCycle)
+    if (m_eeCycle >= m_sliceEndCycle)
     {
-        return false;
+        const GuestThread *running = currentThread();
+        if (running != nullptr && hasReadyAtOrAbovePriority(running->currentPriority))
+        {
+            m_rescheduleRequested = true;
+            m_timeSliceExpired = true;
+            return true;
+        }
+        renewTimeSlice();
     }
 
-    const GuestThread *running = currentThread();
-    if (running != nullptr && hasReadyAtOrAbovePriority(running->currentPriority))
-    {
-        m_rescheduleRequested = true;
-        m_timeSliceExpired = true;
-        return true;
-    }
-
-    renewTimeSlice();
+    // Nothing is due before the earliest of these: let the next blocks take
+    // the fast path until then.
+    uint64_t until = m_eeCycle + kFastCheckpointCycles;
+    if (nextEventCycle != 0u)
+        until = std::min(until, nextEventCycle);
+    until = std::min(until, m_sliceEndCycle);
+    until = std::min(until, m_eeCycle + std::max<uint64_t>(1u, m_runtime.memory().eeTimerCyclesUntilFlush()));
+    m_fastUntilCycle = until;
     return false;
 }
 
@@ -393,6 +402,17 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
 {
     const uint64_t elapsed = std::max<uint64_t>(1u, cycles);
     m_eeCycle += elapsed;
+    m_unaccountedCycles += elapsed;
+    flushAccounting();
+    m_fastUntilCycle = 0u; // re-evaluate at the next checkpoint
+}
+
+void EeScheduler::flushAccounting() noexcept
+{
+    if (m_unaccountedCycles == 0u)
+        return;
+    const uint64_t elapsed = m_unaccountedCycles;
+    m_unaccountedCycles = 0u;
     m_pendingEeTimerInterrupts |= m_runtime.memory().advanceEeTimers(elapsed);
     m_runtime.advanceIopEeCycles(elapsed);
     if (m_pendingEeTimerInterrupts != 0u)
@@ -2077,6 +2097,7 @@ void EeScheduler::scheduleEvent(uint64_t deadlineCycle,
 
 void EeScheduler::updateNextDeadline()
 {
+    m_fastUntilCycle = 0u;
     if (m_deadlines.empty())
     {
         m_nextDeadlineCycle.store(0u, std::memory_order_release);
@@ -2109,6 +2130,7 @@ bool EeScheduler::hasReadyAtOrAbovePriority(int priority) const
 
 void EeScheduler::renewTimeSlice()
 {
+    m_fastUntilCycle = 0u;
     m_sliceEndCycle = m_eeCycle + kDefaultTimeSliceCycles;
     m_timeSliceExpired = false;
 }
@@ -2172,7 +2194,7 @@ struct EeSchedulerState::Data
     int currentThreadId = 0;
     bool rescheduleRequested = false, timeSliceExpired = false, insideInterrupt = false;
     uint32_t pendingEeTimerInterrupts = 0;
-    uint64_t eeCycle = 0, sliceEndCycle = 0;
+    uint64_t eeCycle = 0, sliceEndCycle = 0, unaccountedCycles = 0;
     std::deque<EeEvent> events;
     std::vector<EeScheduler::ScheduledEventCopy> deadlines;
     std::chrono::steady_clock::time_point savedAt{};
@@ -2213,6 +2235,7 @@ void EeScheduler::saveState(EeSchedulerState &out) const
     d->pendingEeTimerInterrupts = m_pendingEeTimerInterrupts;
     d->eeCycle = m_eeCycle;
     d->sliceEndCycle = m_sliceEndCycle;
+    d->unaccountedCycles = m_unaccountedCycles;
     {
         std::lock_guard lock(m_eventMutex);
         d->events = m_events;
@@ -2286,6 +2309,8 @@ bool EeScheduler::loadState(const EeSchedulerState &in)
     m_pendingEeTimerInterrupts = d.pendingEeTimerInterrupts;
     m_eeCycle = d.eeCycle;
     m_sliceEndCycle = d.sliceEndCycle;
+    m_unaccountedCycles = d.unaccountedCycles;
+    m_fastUntilCycle = 0u;
     {
         std::lock_guard lock(m_eventMutex);
         m_events = d.events;
