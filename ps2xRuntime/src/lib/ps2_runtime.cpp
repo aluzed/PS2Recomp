@@ -376,6 +376,74 @@ namespace
     }
 }
 
+// Background keying: alpha 0 for pure black pixels reachable from the frame border,
+// and for enclosed pure black areas of at least kMinEnclosed pixels (background seen
+// through gaps between limbs); alpha 255 everywhere else.
+static void KeyBackground(std::vector<uint8_t> &rgba, uint32_t stride, uint32_t width, uint32_t height)
+{
+    constexpr uint32_t kMinEnclosed = 300u;
+    if (width == 0u || height == 0u)
+        return;
+    static std::vector<uint8_t> s_state; // 0 = not black, 1 = black unvisited, 2 = keyed, 3 = kept
+    static std::vector<uint32_t> s_stack, s_region;
+    s_state.assign(static_cast<size_t>(width) * height, 0u);
+    for (uint32_t y = 0; y < height; ++y)
+    {
+        const uint8_t *row = rgba.data() + static_cast<size_t>(y) * stride * 4u;
+        for (uint32_t x = 0; x < width; ++x)
+        {
+            const uint8_t *p = row + x * 4u;
+            if ((p[0] | p[1] | p[2]) == 0u)
+                s_state[static_cast<size_t>(y) * width + x] = 1u;
+        }
+    }
+    auto fill = [&](uint32_t start, bool border)
+    {
+        s_stack.clear();
+        s_region.clear();
+        s_stack.push_back(start);
+        s_state[start] = 4u; // in progress
+        while (!s_stack.empty())
+        {
+            const uint32_t i = s_stack.back();
+            s_stack.pop_back();
+            s_region.push_back(i);
+            const uint32_t x = i % width, y = i / width;
+            const uint32_t n[4] = {x > 0 ? i - 1 : UINT32_MAX, x + 1 < width ? i + 1 : UINT32_MAX,
+                                   y > 0 ? i - width : UINT32_MAX, y + 1 < height ? i + width : UINT32_MAX};
+            for (uint32_t j : n)
+                if (j != UINT32_MAX && s_state[j] == 1u)
+                {
+                    s_state[j] = 4u;
+                    s_stack.push_back(j);
+                }
+        }
+        const uint8_t result = (border || s_region.size() >= kMinEnclosed) ? 2u : 3u;
+        for (uint32_t i : s_region)
+            s_state[i] = result;
+    };
+    for (uint32_t x = 0; x < width; ++x)
+    {
+        if (s_state[x] == 1u) fill(x, true);
+        const uint32_t b = (height - 1u) * width + x;
+        if (s_state[b] == 1u) fill(b, true);
+    }
+    for (uint32_t y = 0; y < height; ++y)
+    {
+        const uint32_t l = y * width, r = y * width + width - 1u;
+        if (s_state[l] == 1u) fill(l, true);
+        if (s_state[r] == 1u) fill(r, true);
+    }
+    for (uint32_t i = 0; i < width * height; ++i)
+        if (s_state[i] == 1u) fill(i, false);
+    for (uint32_t y = 0; y < height; ++y)
+    {
+        uint8_t *row = rgba.data() + static_cast<size_t>(y) * stride * 4u;
+        for (uint32_t x = 0; x < width; ++x)
+            row[x * 4u + 3u] = s_state[static_cast<size_t>(y) * width + x] == 2u ? 0u : 255u;
+    }
+}
+
 static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
 {
     static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
@@ -489,6 +557,10 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         }
     }
 
+    if (rt->backgroundKeying())
+        KeyBackground(s_uploadBuffer, static_cast<uint32_t>(tex.width),
+                      std::min<uint32_t>(width, static_cast<uint32_t>(tex.width)),
+                      std::min<uint32_t>(height, static_cast<uint32_t>(tex.height)));
     UpdateTexture(tex, s_uploadBuffer.data());
     outWidth = width;
     outHeight = height;
@@ -2613,6 +2685,10 @@ void PS2Runtime::run()
             (screenHeight - dstHeight) * 0.5f,
             dstWidth,
             dstHeight};
+        if (m_hostUnderlayCallback)
+        {
+            m_hostUnderlayCallback(*this, m_hostUnderlayUserData, dstRect.x, dstRect.y, dstRect.width, dstRect.height);
+        }
         DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {

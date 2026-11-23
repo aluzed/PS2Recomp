@@ -359,6 +359,21 @@ public:
         m_hostOverlayCallback = callback;
         m_hostOverlayUserData = userData;
     }
+    // Drawn before the game frame (inside BeginDrawing), with the rectangle the
+    // game frame will occupy on screen. Used with setBackgroundKeying to show a
+    // host-rendered background where the game left its cleared (pure black) background.
+    using HostUnderlayCallback = void (*)(PS2Runtime &runtime, void *userData,
+                                          float x, float y, float width, float height);
+    void setHostUnderlayCallback(HostUnderlayCallback callback, void *userData)
+    {
+        m_hostUnderlayCallback = callback;
+        m_hostUnderlayUserData = userData;
+    }
+    HostUnderlayCallback hostUnderlayCallback() const { return m_hostUnderlayCallback; }
+    // When on, pure black pixels connected to the frame border (and large enclosed
+    // pure black areas) become transparent in the presented game frame.
+    void setBackgroundKeying(bool on) { m_backgroundKeying.store(on, std::memory_order_relaxed); }
+    bool backgroundKeying() const { return m_backgroundKeying.load(std::memory_order_relaxed); }
     void setDebugUiCallbacks(DebugUiCallback initCallback,
                              DebugUiCallback drawCallback,
                              DebugUiCallback shutdownCallback,
@@ -592,6 +607,9 @@ private:
     HostPresentationOptions m_presentation{};
     bool m_appliedSmoothFilter = false; // the texture starts with raylib's default (point)
     HostOverlayCallback m_hostOverlayCallback = nullptr;
+    HostUnderlayCallback m_hostUnderlayCallback = nullptr;
+    void *m_hostUnderlayUserData = nullptr;
+    std::atomic<bool> m_backgroundKeying{false};
     void *m_hostOverlayUserData = nullptr;
     DebugUiCallback m_debugUiInitCallback = nullptr;
     DebugUiCallback m_debugUiDrawCallback = nullptr;
