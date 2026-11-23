@@ -504,6 +504,8 @@ private:
     VU1Interpreter m_vu1{VU1Interpreter::Unit::VU1};
     R5900Context m_cpuContext;
     std::unique_ptr<EeScheduler> m_eeScheduler;
+    mutable uint64_t m_iopPendingEeCycles = 0; // EE cycles not yet given to the IOP (batched)
+    void flushIopCycles() const noexcept;
     mutable std::mutex m_eeKernelStateMutex;
     std::unordered_map<int, std::vector<EeExitHandlerRegistration>> m_eeExitHandlers;
     std::unordered_map<uint32_t, uint32_t> m_eeSyscallOverrides;

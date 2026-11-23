@@ -1,4 +1,5 @@
 #include "ps2_runtime.h"
+#include <cstdlib>
 #include "runtime/vu/vu1_kzvu_bridge.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
@@ -568,18 +569,21 @@ PS2Runtime::~PS2Runtime()
 ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModule(std::string_view path, const void *arguments, uint32_t argumentSize)
 {
     auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
+    flushIopCycles();
     return m_iopSubsystem->loadModule(path, arguments, argumentSize);
 }
 
 ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize)
 {
     auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
+    flushIopCycles();
     return m_iopSubsystem->loadModuleBuffer(guestAddress, arguments, argumentSize);
 }
 
 bool PS2Runtime::stopIopModule(int32_t moduleId, int32_t *result)
 {
     auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
+    flushIopCycles();
     return m_iopSubsystem->stopModule(moduleId, result);
 }
 
@@ -597,18 +601,42 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
 {
     auto scope = m_iopHost->enterCall(ctx, rdram);
     request.callToken = scope.token();
+    flushIopCycles();
     return m_iopSubsystem->handleRpc(request);
 }
 
 void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
 {
     auto scope = m_iopHost->enterCall(nullptr, rdram);
+    flushIopCycles();
     m_iopSubsystem->onSifTransfer(transfer);
 }
 
 void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
 {
-    m_iopSubsystem->runEeCycles(eeCycles);
+    // Generated code charges cycles per basic block; running the IOP scheduler
+    // for every few cycles cost ~30% of a 3D frame. Advance it in batches of
+    // PS2X_IOP_BATCH EE cycles (default 2048, ~7 us of guest time; 1 = every
+    // call, the previous behaviour).
+    static const uint64_t batch = []
+    {
+        const char *value = std::getenv("PS2X_IOP_BATCH");
+        const long parsed = value ? std::strtol(value, nullptr, 10) : 0;
+        return parsed > 0 ? static_cast<uint64_t>(parsed) : 2048u;
+    }();
+    m_iopPendingEeCycles += eeCycles;
+    if (m_iopPendingEeCycles >= batch)
+        flushIopCycles();
+}
+
+void PS2Runtime::flushIopCycles() const noexcept
+{
+    // The EE is about to look at or talk to the IOP: give it the batched time first.
+    if (m_iopPendingEeCycles == 0 || !m_iopSubsystem)
+        return;
+    const uint64_t cycles = m_iopPendingEeCycles;
+    m_iopPendingEeCycles = 0;
+    m_iopSubsystem->runEeCycles(cycles);
 }
 
 void PS2Runtime::resetIop()
@@ -618,6 +646,7 @@ void PS2Runtime::resetIop()
 
 ps2x::iop::DebugSnapshot PS2Runtime::iopDebugSnapshot() const
 {
+    flushIopCycles();
     return m_iopSubsystem->debugSnapshot();
 }
 
@@ -633,16 +662,19 @@ bool PS2Runtime::freeIopMemory(uint32_t address)
 
 bool PS2Runtime::readIopMemory(uint32_t address, void *destination, size_t size) const
 {
+    flushIopCycles();
     return m_iopSubsystem && m_iopSubsystem->readMemory(address, destination, size);
 }
 
 bool PS2Runtime::writeIopMemory(uint32_t address, const void *source, size_t size)
 {
+    flushIopCycles();
     return m_iopSubsystem && m_iopSubsystem->writeMemory(address, source, size);
 }
 
 bool PS2Runtime::zeroIopMemory(uint32_t address, size_t size)
 {
+    flushIopCycles();
     return m_iopSubsystem && m_iopSubsystem->zeroMemory(address, size);
 }
 
