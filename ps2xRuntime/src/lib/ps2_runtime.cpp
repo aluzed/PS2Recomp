@@ -2307,6 +2307,22 @@ void PS2Runtime::requestStop()
     }
 }
 
+bool PS2Runtime::callStaticMissing(uint8_t *rdram, R5900Context *ctx, uint32_t targetPc, uint32_t sourcePc,
+                                   uint32_t fallthroughPc)
+{
+    // Same handling as dispatchGuestBranch for a DirectCall without a
+    // function; the cycles were charged by callStatic.
+    reportMissingFunction(rdram, ctx, targetPc, sourcePc, GuestBranchKind::DirectCall, "JAL");
+    const MissingFunctionPolicy policy = missingFunctionPolicy();
+    if (policy == MissingFunctionPolicy::SkipCallDebug)
+    {
+        ctx->pc = fallthroughPc;
+        return true;
+    }
+    ctx->pc = targetPc;
+    return false;
+}
+
 bool PS2Runtime::isStopRequested() const
 {
     return m_stopRequested.load(std::memory_order_relaxed);

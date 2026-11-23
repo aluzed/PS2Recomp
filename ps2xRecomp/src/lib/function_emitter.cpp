@@ -46,6 +46,8 @@ namespace ps2recomp
             ss << "#include <stdexcept>\n";
             ss << "#include \"ps2_runtime_macros.h\"\n";
             ss << "#include \"ps2_runtime.h\"\n";
+            if (cg.m_fastStaticCalls)
+                ss << "#include \"runtime/ps2_static_call.h\"\n";
             ss << "#include <ps2_recompiled_functions.h>\n";
             ss << "#include <ps2_recompiled_stubs.h>\n\n";
             ss << "#include \"ps2_syscalls.h\"\n";

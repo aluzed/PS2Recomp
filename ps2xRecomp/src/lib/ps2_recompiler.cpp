@@ -1024,6 +1024,7 @@ namespace ps2recomp
             m_codeGenerator->setConfiguredJumpTables(m_config.jumpTables);
             m_codeGenerator->setJalrIsCall(m_config.jalrIsCall);
             m_codeGenerator->setRegisterLocals(m_config.registerLocals);
+            m_codeGenerator->setFastStaticCalls(m_config.fastStaticCalls);
             m_codeGenerator->setEmitInstructionComments(true);
 
             fs::create_directories(m_config.outputPath);

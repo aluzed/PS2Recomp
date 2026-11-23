@@ -227,6 +227,15 @@ namespace ps2recomp
     void ControlFlowEmitter::emitExternalJumpDispatch(uint32_t target, StaticBranchKind kind, std::string_view indent)
     {
         const bool isCall = kind == StaticBranchKind::Call;
+        if (isCall && m_gen.m_fastStaticCalls)
+        {
+            // Inline fast path of the same dispatch (runtime/ps2_static_call.h).
+            m_ss << fmt::format("{}if (!runtime->callStatic(rdram, ctx, 0x{:X}u, 0x{:X}u, 0x{:X}u)) {{\n",
+                                indent, target, branchPc(), fallthroughPc());
+            m_ss << fmt::format("{}    return;\n", indent);
+            m_ss << fmt::format("{}}}\n", indent);
+            return;
+        }
         emitRuntimeBranchDispatch(fmt::format("0x{:X}u", target),
                                   branchPc(),
                                   isCall ? fallthroughPc() : 0u,

@@ -196,6 +196,9 @@ namespace ps2recomp
         // Keep guest GPRs in C++ locals inside generated functions
         // (register_locals.h).
         bool registerLocals = false;
+        // Static JALs call PS2Runtime::callStatic (inline fast path of the
+        // dispatch) instead of dispatchGuestBranch.
+        bool fastStaticCalls = false;
         std::vector<std::string> entryPointHints;
         std::unordered_map<uint32_t, uint32_t> mmioByInstructionAddress;
         std::vector<JumpTable> jumpTables;

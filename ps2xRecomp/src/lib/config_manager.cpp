@@ -65,6 +65,10 @@ namespace ps2recomp
             config.patchCop0 = toml::find_or<bool>(general, "patch_cop0", config.patchCop0);
             config.patchCache = toml::find_or<bool>(general, "patch_cache", config.patchCache);
 
+            if (general.contains("fast_static_calls") && general.at("fast_static_calls").is_boolean())
+            {
+                config.fastStaticCalls = toml::find<bool>(general, "fast_static_calls");
+            }
             if (general.contains("register_locals") && general.at("register_locals").is_boolean())
             {
                 config.registerLocals = toml::find<bool>(general, "register_locals");
@@ -319,6 +323,8 @@ namespace ps2recomp
             general["jalr_is_call"] = true;
         if (config.registerLocals)
             general["register_locals"] = true;
+        if (config.fastStaticCalls)
+            general["fast_static_calls"] = true;
         general["entry_points"] = config.entryPointHints;
         data["general"] = general;
 

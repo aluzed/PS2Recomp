@@ -447,6 +447,16 @@ public:
     void requestStop();
     bool isStopRequested() const;
 
+    // Static JAL from generated code (fast path of dispatchGuestBranch for a
+    // DirectCall): same checkpoint charge, same function table entry (so hooks
+    // installed with replaceFunction still run) and same return checks, inline
+    // and without the per-call diagnostics. Defined in runtime/ps2_static_call.h.
+    inline bool callStatic(uint8_t *rdram, R5900Context *ctx, uint32_t targetPc, uint32_t sourcePc,
+                           uint32_t fallthroughPc);
+    // callStatic's slow path when the target has no function (cycles already charged).
+    bool callStaticMissing(uint8_t *rdram, R5900Context *ctx, uint32_t targetPc, uint32_t sourcePc,
+                           uint32_t fallthroughPc);
+
     EeScheduler &eeScheduler();
     const EeScheduler &eeScheduler() const;
     void postEeEvent(EeEvent event);
