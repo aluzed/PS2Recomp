@@ -2070,6 +2070,8 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
 {
     if (!data || sizeBytes < 16)
         return;
+    if (m_simulateOnly.load(std::memory_order_relaxed) && !onVif1Thread())
+        return; // simulate-only frame: no GS work
     if (m_vif1Threaded.load(std::memory_order_acquire) && !onVif1Thread())
     {
         // Keep GIF input in order with the VU thread's PATH1/PATH2 output.

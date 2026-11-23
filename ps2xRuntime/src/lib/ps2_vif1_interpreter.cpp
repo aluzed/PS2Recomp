@@ -1014,6 +1014,8 @@ void PS2Memory::processVIF1DataNow(const uint8_t *data, uint32_t sizeBytes)
 
 void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 {
+    if (m_simulateOnly.load(std::memory_order_relaxed) && !onVif1Thread())
+        return; // simulate-only frame: no VU1/GS work
     if (!m_vif1Threaded.load(std::memory_order_acquire) || onVif1Thread() || !data || sizeBytes == 0u)
     {
         processVIF1DataNow(data, sizeBytes);

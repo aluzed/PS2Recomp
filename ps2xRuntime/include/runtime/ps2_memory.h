@@ -380,6 +380,13 @@ public:
     // `onWorkerStart` runs on the VU thread before anything else (kzvu binds
     // its VU1 state to that thread). Off by default.
     void setVif1Threaded(bool enabled, std::function<void()> onWorkerStart = {});
+    // Simulate-only frames (rollback resimulation): VIF1 data and GIF packets
+    // submitted from the EE are dropped instead of being handed to the VU and
+    // GS threads, so a resimulated frame does no rendering work. Game-visible
+    // EE state must not depend on them (checked by the rollback harness).
+    void setSimulateOnly(bool enabled) { m_simulateOnly.store(enabled, std::memory_order_relaxed); }
+    bool simulateOnly() const { return m_simulateOnly.load(std::memory_order_relaxed); }
+
     // Waits until every VIF1 transfer submitted before this call is processed.
     // `reason`: the address that needed it (diagnostics, PS2X_SYNC_STATS).
     void waitVif1Idle(uint32_t reason = 0) const;
@@ -448,6 +455,7 @@ public:
     void processVIF1DataNow(const uint8_t *data, uint32_t sizeBytes);
     void vif1WorkerLoop(std::function<void()> onWorkerStart);
     std::atomic<bool> m_vif1Threaded{false};
+    std::atomic<bool> m_simulateOnly{false};
     std::thread m_vif1Worker;
     std::thread::id m_vif1WorkerId{};
     mutable std::mutex m_vif1QueueMutex;
