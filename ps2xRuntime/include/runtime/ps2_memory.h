@@ -10,6 +10,9 @@
 #include <atomic>
 #include <iostream>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 
 #include "gs/ps2_gif_arbiter.h"
 #if defined(_MSC_VER)
@@ -364,6 +367,17 @@ public:
     void processVIF0Data(const uint8_t *data, uint32_t sizeBytes);
     void processVIF1Data(uint32_t srcPhysAddr, uint32_t sizeBytes);
     void processVIF1Data(const uint8_t *data, uint32_t sizeBytes);
+
+    // Threaded VIF1/VU1 (like PCSX2's MTVU): VIF1 data is copied into a queue
+    // run by a VU thread, which executes the VIF1 commands, the VU1
+    // microprograms they start (MSCAL/MSCNT callbacks) and their XGKICKs.
+    // EE accesses to VIF1 registers and VU1 memory wait for the queue first.
+    // `onWorkerStart` runs on the VU thread before anything else (kzvu binds
+    // its VU1 state to that thread). Off by default.
+    void setVif1Threaded(bool enabled, std::function<void()> onWorkerStart = {});
+    // Waits until every VIF1 transfer submitted before this call is processed.
+    void waitVif1Idle() const;
+    bool onVif1Thread() const { return std::this_thread::get_id() == m_vif1WorkerId; }
     void processPendingTransfers();
     std::vector<uint32_t> consumeCompletedDmacCauses();
 
@@ -399,6 +413,24 @@ public:
     std::atomic<uint64_t> m_vu1CodeGeneration{0};
     // I/O registers
     std::unordered_map<uint32_t, uint32_t> m_ioRegisters;
+    // GIF arbiter and masked-PATH3 FIFO: shared by the EE (PATH3) and the VU
+    // thread (PATH1 XGKICK, PATH2 DIRECT, MSKPATH3).
+    std::recursive_mutex m_gifMutex;
+    // Threaded VIF1/VU1.
+    void processVIF1DataNow(const uint8_t *data, uint32_t sizeBytes);
+    void vif1WorkerLoop(std::function<void()> onWorkerStart);
+    std::atomic<bool> m_vif1Threaded{false};
+    std::thread m_vif1Worker;
+    std::thread::id m_vif1WorkerId{};
+    mutable std::mutex m_vif1QueueMutex;
+    mutable std::condition_variable m_vif1QueueCv;
+    mutable std::condition_variable m_vif1IdleCv;
+    std::deque<std::vector<uint8_t>> m_vif1Queue;
+    std::vector<std::vector<uint8_t>> m_vif1FreeBuffers;
+    size_t m_vif1QueuedBytes = 0;
+    uint64_t m_vif1Submitted = 0;
+    uint64_t m_vif1Completed = 0;
+    bool m_vif1WorkerStop = false;
     uint64_t m_eeTimerPendingCycles = 0;      // charged but not yet applied to the timers
     uint64_t m_eeTimerBudget = 0;             // apply once pending reaches this
     uint32_t m_eeTimerPendingInterrupts = 0;  // raised during a flush outside advanceEeTimers

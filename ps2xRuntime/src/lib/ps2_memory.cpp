@@ -246,6 +246,7 @@ PS2Memory::PS2Memory()
 
 PS2Memory::~PS2Memory()
 {
+    setVif1Threaded(false); // the VU thread uses the buffers freed below
     if (m_rdram)
     {
         delete[] m_rdram;
@@ -632,6 +633,8 @@ uint8_t *PS2Memory::mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t &offs
 
 const uint8_t *PS2Memory::mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t &offset, uint32_t &limit) const
 {
+    if (physAddr >= PS2_VU1_CODE_BASE && physAddr < PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE)
+        waitVif1Idle(); // VU1 memory belongs to the VU thread while it runs
     auto mapRange = [&](uint32_t base, uint32_t rangeSize, const uint8_t *ptr) -> const uint8_t *
     {
         if (!ptr || physAddr < base)
@@ -1222,6 +1225,8 @@ void PS2Memory::write128(uint32_t address, __m128i value)
 
 bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 {
+    if (address >= 0x10003C00u && address < 0x10004000u)
+        waitVif1Idle(); // VIF1 registers belong to the VU thread while it runs
     const bool timerOrGifStat = (address >= 0x10000000u && address < 0x10002000u) || address == 0x10003020u;
     if (timerOrGifStat)
     {
@@ -1331,6 +1336,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
         case 0x10003C10u:     // VIF1_FBRST
             if (value & 0x1u) // RST
             {
+                std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
                 const bool wasPath3Masked = m_path3Masked;
                 std::memset(&vif1_regs, 0, sizeof(vif1_regs));
                 m_vif1PendingPath2ImageQwc = 0u;
@@ -1964,7 +1970,10 @@ void PS2Memory::processPendingTransfers()
     m_pendingVif1Transfers.clear();
 
     if (m_gifArbiter)
+    {
+        std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
         m_gifArbiter->drain();
+    }
 
     static constexpr uint32_t GIF_CHANNEL = 0x1000A000;
     static constexpr uint32_t VIF0_CHANNEL = 0x10008000;
@@ -2025,6 +2034,7 @@ std::vector<uint32_t> PS2Memory::consumeCompletedDmacCauses()
 
 void PS2Memory::flushMaskedPath3Packets(bool drainImmediately)
 {
+    std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     if (m_path3Masked || m_path3MaskedFifo.empty())
         return;
 
@@ -2049,6 +2059,7 @@ void PS2Memory::flushMaskedPath3Packets(bool drainImmediately)
 
 void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl)
 {
+    std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     if (!data || sizeBytes < 16)
         return;
 
@@ -2073,6 +2084,7 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
 
 void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
 {
+    std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     if (!m_rdram || qwCount == 0)
         return;
     const uint64_t bytes64 = static_cast<uint64_t>(qwCount) * 16ull;
@@ -2099,6 +2111,7 @@ void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
 
 void PS2Memory::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
+    std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     if (m_gifArbiter)
         submitGifPacket(GifPathId::Path3, data, sizeBytes);
     else if (m_gifPacketCallback && data && sizeBytes >= 16)
@@ -2107,6 +2120,7 @@ void PS2Memory::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 
 bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint32_t chcr)
 {
+    std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     static constexpr uint32_t GIF_CHANNEL = 0x1000A000u;
     static constexpr uint32_t D_STAT = 0x1000E010u;
     static constexpr uint32_t D_CTRL = 0x1000E000u;
@@ -2299,6 +2313,7 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
 
 bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t chcr)
 {
+    std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
     static constexpr uint32_t GIF_CHANNEL = 0x1000A000u;
     static constexpr uint32_t D_STAT = 0x1000E010u;
     static constexpr uint32_t D_CTRL = 0x1000E000u;
@@ -2384,6 +2399,8 @@ int PS2Memory::pollDmaRegisters()
 
 uint32_t PS2Memory::readIORegister(uint32_t address)
 {
+    if (address >= 0x10003C00u && address < 0x10004000u)
+        waitVif1Idle(); // VIF1 registers belong to the VU thread while it runs
     if ((address >= 0x10000000u && address < 0x10002000u) || address == 0x10003020u)
         flushEeTimers();
     size_t timerIndex = 0u;

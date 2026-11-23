@@ -69,6 +69,9 @@ namespace
     {
         for (int i = 0; i < 16 && kzvuRunning() && (kzvuVpuStat() & 0x0600u) == 0u; ++i)
             kzvuContinue(kBudget);
+        // On the VU thread the EE context belongs to another thread: leave it.
+        if (g_runtime->memory().onVif1Thread())
+            return;
         if (R5900Context *ctx = eeContext())
             ctx->vu0_vpu_stat = (ctx->vu0_vpu_stat & ~0x0600u) | (kzvuVpuStat() & 0x0600u);
     }
@@ -109,6 +112,15 @@ bool installKzvuVu1(PS2Runtime &runtime)
                                    prepare(top, itop);
                                    kzvuExecute(0xFFFFFFFFu, kBudget);
                                    finish(); });
+    // VIF1 + VU1 on their own thread (MTVU) unless PS2X_MTVU=0. kzvu binds its
+    // VU1 state to that thread before any program runs.
+    const char *mtvu = std::getenv("PS2X_MTVU");
+    const bool threaded = !(mtvu && mtvu[0] == '0');
+    if (threaded)
+        memory.setVif1Threaded(true, []
+                               { kzvuBindVu1Thread(); });
+    std::fprintf(stderr, "[vu1] %s\n", threaded ? "VIF1 + VU1 on their own thread (MTVU)" : "VIF1 + VU1 on the game thread");
+
     const char *vu0Env = std::getenv("PS2X_VU0_CORE");
     if (!(vu0Env && std::string(vu0Env) == "builtin"))
     {

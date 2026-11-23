@@ -502,7 +502,7 @@ void PS2Memory::processVIF1Data(uint32_t srcPhys, uint32_t sizeBytes)
     processVIF1Data(m_rdram + srcPhys, sizeBytes);
 }
 
-void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+void PS2Memory::processVIF1DataNow(const uint8_t *data, uint32_t sizeBytes)
 {
     if (sizeBytes == 0u)
         return;
@@ -591,6 +591,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         else if (opcode == VIF_MSKPATH3)
         {
             // VIF command docs: MSKPATH3 uses IMMEDIATE bit 15.
+            std::lock_guard<std::recursive_mutex> gifLock(m_gifMutex);
             const bool wasMasked = m_path3Masked;
             m_path3Masked = (imm & 0x8000u) != 0u;
             if (wasMasked && !m_path3Masked)
@@ -1003,5 +1004,105 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         {
             continue;
         }
+    }
+}
+
+// ---- threaded VIF1/VU1 (MTVU) ----
+
+void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
+{
+    if (!m_vif1Threaded.load(std::memory_order_acquire) || onVif1Thread() || !data || sizeBytes == 0u)
+    {
+        processVIF1DataNow(data, sizeBytes);
+        return;
+    }
+    // Copy now: the game reuses its DMA buffers once the transfer is done.
+    std::vector<uint8_t> buffer;
+    {
+        std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
+        if (!m_vif1FreeBuffers.empty())
+        {
+            buffer = std::move(m_vif1FreeBuffers.back());
+            m_vif1FreeBuffers.pop_back();
+        }
+    }
+    buffer.assign(data, data + sizeBytes);
+    constexpr size_t kMaxQueuedBytes = 16u * 1024u * 1024u;
+    std::unique_lock<std::mutex> lock(m_vif1QueueMutex);
+    m_vif1IdleCv.wait(lock, [&]
+                      { return m_vif1QueuedBytes < kMaxQueuedBytes || m_vif1WorkerStop; });
+    m_vif1QueuedBytes += sizeBytes;
+    m_vif1Queue.push_back(std::move(buffer));
+    ++m_vif1Submitted;
+    lock.unlock();
+    m_vif1QueueCv.notify_one();
+}
+
+void PS2Memory::setVif1Threaded(bool enabled, std::function<void()> onWorkerStart)
+{
+    if (enabled == m_vif1Threaded.load(std::memory_order_acquire))
+        return;
+    if (enabled)
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
+            m_vif1WorkerStop = false;
+        }
+        m_vif1Worker = std::thread([this, start = std::move(onWorkerStart)]() mutable
+                                   { vif1WorkerLoop(std::move(start)); });
+        m_vif1WorkerId = m_vif1Worker.get_id(); // published by the release store below
+        m_vif1Threaded.store(true, std::memory_order_release);
+        return;
+    }
+    waitVif1Idle();
+    m_vif1Threaded.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
+        m_vif1WorkerStop = true;
+    }
+    m_vif1QueueCv.notify_all();
+    if (m_vif1Worker.joinable())
+        m_vif1Worker.join();
+    m_vif1WorkerId = std::thread::id{};
+}
+
+void PS2Memory::waitVif1Idle() const
+{
+    if (!m_vif1Threaded.load(std::memory_order_acquire) || onVif1Thread())
+        return;
+    std::unique_lock<std::mutex> lock(m_vif1QueueMutex);
+    const uint64_t target = m_vif1Submitted;
+    m_vif1IdleCv.wait(lock, [&]
+                      { return m_vif1Completed >= target || m_vif1WorkerStop; });
+}
+
+void PS2Memory::vif1WorkerLoop(std::function<void()> onWorkerStart)
+{
+    if (onWorkerStart)
+        onWorkerStart();
+    for (;;)
+    {
+        std::vector<uint8_t> buffer;
+        {
+            std::unique_lock<std::mutex> lock(m_vif1QueueMutex);
+            m_vif1QueueCv.wait(lock, [&]
+                               { return !m_vif1Queue.empty() || m_vif1WorkerStop; });
+            if (m_vif1Queue.empty())
+                break;
+            buffer = std::move(m_vif1Queue.front());
+            m_vif1Queue.pop_front();
+        }
+        processVIF1DataNow(buffer.data(), static_cast<uint32_t>(buffer.size()));
+        {
+            std::lock_guard<std::mutex> lock(m_vif1QueueMutex);
+            m_vif1QueuedBytes -= buffer.size();
+            ++m_vif1Completed;
+            if (m_vif1FreeBuffers.size() < 64u)
+            {
+                buffer.clear();
+                m_vif1FreeBuffers.push_back(std::move(buffer));
+            }
+        }
+        m_vif1IdleCv.notify_all();
     }
 }
