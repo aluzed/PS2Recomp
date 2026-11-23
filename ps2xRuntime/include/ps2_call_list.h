@@ -474,6 +474,10 @@
     X(scePadGetPortMax)                       \
     X(scePadGetReqState)                      \
     X(scePadGetSlotMax)                       \
+    X(sceMtapInit)                            \
+    X(sceMtapPortOpen)                        \
+    X(sceMtapPortClose)                       \
+    X(sceMtapGetConnection)                   \
     X(scePadGetState)                         \
     X(scePadInfoAct)                          \
     X(scePadInfoComb)                         \

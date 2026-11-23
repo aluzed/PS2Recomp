@@ -450,6 +450,37 @@ namespace ps2_stubs
         setReturnS32(ctx, 1);
     }
 
+    // libmtap goes through SIF RPC to the IOP mtapman module, which is not
+    // emulated: the game would read an unfilled RPC buffer and may believe a
+    // multitap is plugged, then poll slots 1-3 of port 0 instead of port 1.
+    void sceMtapInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        setReturnS32(ctx, 1);
+    }
+
+    void sceMtapPortOpen(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        setReturnS32(ctx, 1);
+    }
+
+    void sceMtapPortClose(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        setReturnS32(ctx, 1);
+    }
+
+    void sceMtapGetConnection(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        setReturnS32(ctx, 0); // no multitap on any port
+    }
+
     void scePadGetState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         (void)rdram;

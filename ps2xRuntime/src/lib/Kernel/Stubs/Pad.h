@@ -18,6 +18,12 @@ namespace ps2_stubs
     void scePadGetPortMax(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void scePadGetReqState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void scePadGetSlotMax(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    // libmtap: no multitap is emulated, so every port reports "not connected"
+    // and games fall back to one pad per port.
+    void sceMtapInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void sceMtapPortOpen(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void sceMtapPortClose(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void sceMtapGetConnection(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void scePadGetState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void scePadInfoAct(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void scePadInfoComb(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);

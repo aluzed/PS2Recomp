@@ -195,6 +195,16 @@ void register_pad_input_tests()
             t.Equals(static_cast<uint32_t>(getRegU32(&ctx, 2)), static_cast<uint32_t>(0), "closed port should return DISCONNECTED after close");
         });
 
+        tc.Run("sceMtapGetConnection reports no multitap", [](TestCase &t) {
+            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
+            R5900Context ctx;
+            setRegU32(ctx, 4, 0u);
+            ps2_stubs::sceMtapGetConnection(rdram.data(), &ctx, nullptr);
+            t.Equals(static_cast<uint32_t>(getRegU32(&ctx, 2)), static_cast<uint32_t>(0), "port 0 has no multitap");
+            ps2_stubs::sceMtapPortOpen(rdram.data(), &ctx, nullptr);
+            t.Equals(static_cast<uint32_t>(getRegU32(&ctx, 2)), static_cast<uint32_t>(1), "sceMtapPortOpen succeeds");
+        });
+
         tc.Run("pad command state reports EXECCMD once before returning STABLE", [](TestCase &t)
                {
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0);
