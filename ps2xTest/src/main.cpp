@@ -21,6 +21,7 @@ void register_ps2_runtime_expansion_tests();
 void register_ps2_float_semantics_tests();
 void register_ps2_vu0_vf0_tests();
 void register_ps2_vu0_fdiv_tests();
+void register_ps2_vu0_ftoi_tests();
 void reset_ps2_test_function_table();
 
 int main()
@@ -46,6 +47,7 @@ int main()
     register_ps2_float_semantics_tests();
     register_ps2_vu0_vf0_tests();
     register_ps2_vu0_fdiv_tests();
+    register_ps2_vu0_ftoi_tests();
     int res = MiniTest::Run();
     std::cout.flush();
     std::cerr.flush();
