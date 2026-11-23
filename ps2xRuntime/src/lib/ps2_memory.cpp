@@ -2702,6 +2702,8 @@ void PS2Memory::saveGuestState(GuestState &out)
     waitVif1Idle();
     out.rdram.assign(m_rdram, m_rdram + PS2_RAM_SIZE);
     out.scratchpad.assign(m_scratchpad, m_scratchpad + PS2_SCRATCHPAD_SIZE);
+    out.vu0Data.assign(m_vu0Data, m_vu0Data + PS2_VU0_DATA_SIZE);
+    out.vu1Data.assign(m_vu1Data, m_vu1Data + PS2_VU1_DATA_SIZE);
     out.ioRegisters = m_ioRegisters;
     for (size_t i = 0; i < m_eeTimers.size(); ++i)
     {
@@ -2733,6 +2735,8 @@ void PS2Memory::loadGuestState(const GuestState &in)
     waitVif1Idle();
     std::memcpy(m_rdram, in.rdram.data(), std::min<size_t>(in.rdram.size(), PS2_RAM_SIZE));
     std::memcpy(m_scratchpad, in.scratchpad.data(), std::min<size_t>(in.scratchpad.size(), PS2_SCRATCHPAD_SIZE));
+    std::memcpy(m_vu0Data, in.vu0Data.data(), std::min<size_t>(in.vu0Data.size(), PS2_VU0_DATA_SIZE));
+    std::memcpy(m_vu1Data, in.vu1Data.data(), std::min<size_t>(in.vu1Data.size(), PS2_VU1_DATA_SIZE));
     m_ioRegisters = in.ioRegisters;
     for (size_t i = 0; i < m_eeTimers.size(); ++i)
     {

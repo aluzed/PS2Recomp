@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <utility>
@@ -147,6 +148,27 @@ bool PS2IopHostAdapter::readGuest(uint32_t address, void *destination, size_t si
     return true;
 }
 
+namespace
+{
+    // PS2X_WATCH_EE=<hex address>: log IOP writes into EE RAM that cover it
+    // (diagnostics for rollback/determinism work).
+    void watchIopWrite(PS2Runtime &runtime, uint32_t address, size_t size, const char *what)
+    {
+        static const uint32_t watch = []
+        {
+            const char *v = std::getenv("PS2X_WATCH_EE");
+            return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 16)) : 0u;
+        }();
+        if (watch == 0u)
+            return;
+        const uint32_t physical = address & 0x1FFFFFFFu;
+        if (watch < physical || watch >= physical + size)
+            return;
+        std::cerr << "[iop:watch] " << what << " 0x" << std::hex << physical << " size 0x" << size << std::dec
+                  << " vsync " << runtime.memory().gs().vsyncTick.load(std::memory_order_relaxed) << std::endl;
+    }
+}
+
 bool PS2IopHostAdapter::writeGuest(uint32_t address, const void *source, size_t size)
 {
     if (!source && size != 0)
@@ -162,6 +184,7 @@ bool PS2IopHostAdapter::writeGuest(uint32_t address, const void *source, size_t 
     {
         uint8_t *const rdram = m_activeRdram ? m_activeRdram : m_runtime.memory().getRDRAM();
         ps2TraceGuestRangeWrite(rdram, address, static_cast<uint32_t>(size), "IopHost::writeGuest", nullptr);
+        watchIopWrite(m_runtime, address, size, "writeGuest");
         std::memcpy(destination, source, size);
     }
     return true;
@@ -178,6 +201,7 @@ bool PS2IopHostAdapter::zeroGuest(uint32_t address, size_t size)
     {
         uint8_t *const rdram = m_activeRdram ? m_activeRdram : m_runtime.memory().getRDRAM();
         ps2TraceGuestRangeWrite(rdram, address, static_cast<uint32_t>(size), "IopHost::zeroGuest", nullptr);
+        watchIopWrite(m_runtime, address, size, "zeroGuest");
         std::memset(destination, 0, size);
     }
     return true;
