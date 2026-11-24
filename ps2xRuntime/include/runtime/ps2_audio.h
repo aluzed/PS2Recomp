@@ -39,7 +39,8 @@ public:
     // PCM WAV (8/16-bit, mono/stereo, any rate; resampled to 48 kHz), looped.
     // Same path again keeps playing; an empty path stops. Returns false when
     // the file cannot be read.
-    bool setMusicOverride(const std::string &path);
+    // startSeconds: where playback begins (the loop restarts at 0).
+    bool setMusicOverride(const std::string &path, double startSeconds = 0.0);
     [[nodiscard]] bool musicOverrideActive() const { return m_musicActive.load(); }
 
 private:
@@ -66,6 +67,7 @@ private:
     std::vector<int16_t> m_music;     // interleaved stereo, 48 kHz
     size_t m_musicPos = 0;
     std::string m_musicPath;
+    double m_musicStart = 0.0;
     std::atomic<bool> m_musicActive{false};
 
     void playDecodedSample(uint32_t sampleKey, DecodedSample &sample, float pitch, float volume,

@@ -540,17 +540,20 @@ namespace
     }
 }
 
-bool PS2AudioBackend::setMusicOverride(const std::string &path)
+bool PS2AudioBackend::setMusicOverride(const std::string &path, double startSeconds)
 {
-    if (path == m_musicPath)
+    if (path == m_musicPath && startSeconds == m_musicStart)
         return m_musicActive.load() || path.empty();
     std::vector<int16_t> pcm;
     const bool ok = path.empty() || loadWav48k(path, pcm);
     {
         std::lock_guard<std::mutex> lock(m_musicMutex);
         m_music = std::move(pcm);
-        m_musicPos = 0;
+        // 48 kHz interleaved stereo: two samples per frame.
+        const size_t start = static_cast<size_t>(std::max(0.0, startSeconds) * 48000.0) * 2u;
+        m_musicPos = start < m_music.size() ? start : 0;
         m_musicPath = path;
+        m_musicStart = startSeconds;
         m_musicActive.store(ok && !m_music.empty());
     }
     if (!ok)
