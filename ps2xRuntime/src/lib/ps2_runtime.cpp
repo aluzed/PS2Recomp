@@ -381,7 +381,11 @@ namespace
 // through gaps between limbs); alpha 255 everywhere else.
 static void KeyBackground(std::vector<uint8_t> &rgba, uint32_t stride, uint32_t width, uint32_t height)
 {
-    constexpr uint32_t kMinEnclosed = 300u;
+    // PS2X_KEY_MIN_ENCLOSED: minimum size of an enclosed black area to key (default 300).
+    // PS2X_KEY_FRINGE: pixels whose brightest channel is <= this value and that touch a keyed
+    // pixel are keyed too (dark edge blended with the black background); 0 = off.
+    static const uint32_t kMinEnclosed = [] { const char *e = std::getenv("PS2X_KEY_MIN_ENCLOSED"); return e && *e ? static_cast<uint32_t>(std::atoi(e)) : 300u; }();
+    static const uint32_t kFringe = [] { const char *e = std::getenv("PS2X_KEY_FRINGE"); return e && *e ? static_cast<uint32_t>(std::atoi(e)) : 0u; }();
     if (width == 0u || height == 0u)
         return;
     static std::vector<uint8_t> s_state; // 0 = not black, 1 = black unvisited, 2 = keyed, 3 = kept
@@ -436,11 +440,106 @@ static void KeyBackground(std::vector<uint8_t> &rgba, uint32_t stride, uint32_t 
     }
     for (uint32_t i = 0; i < width * height; ++i)
         if (s_state[i] == 1u) fill(i, false);
+    if (kFringe > 0u)
+    {
+        static std::vector<uint32_t> s_fringe;
+        s_fringe.clear();
+        for (uint32_t y = 0; y < height; ++y)
+            for (uint32_t x = 0; x < width; ++x)
+            {
+                const uint32_t i = y * width + x;
+                if (s_state[i] == 2u)
+                    continue;
+                const uint8_t *p = rgba.data() + (static_cast<size_t>(y) * stride + x) * 4u;
+                if (p[0] > kFringe || p[1] > kFringe || p[2] > kFringe)
+                    continue;
+                if ((x > 0 && s_state[i - 1] == 2u) || (x + 1 < width && s_state[i + 1] == 2u) ||
+                    (y > 0 && s_state[i - width] == 2u) || (y + 1 < height && s_state[i + width] == 2u))
+                    s_fringe.push_back(i);
+            }
+        for (uint32_t i : s_fringe)
+            s_state[i] = 2u;
+    }
     for (uint32_t y = 0; y < height; ++y)
     {
         uint8_t *row = rgba.data() + static_cast<size_t>(y) * stride * 4u;
         for (uint32_t x = 0; x < width; ++x)
             row[x * 4u + 3u] = s_state[static_cast<size_t>(y) * width + x] == 2u ? 0u : 255u;
+    }
+}
+
+// Colour keying (see PS2Runtime::setBackgroundKeyColor), for a magenta-like key:
+// - pixels within a small tolerance of the key colour: transparent (RGB set to black so the
+//   bilinear scaling of the frame does not bleed the key colour into the fighters' edges);
+// - pixels reachable from those through "darkened key" pixels (key hue scaled by k: the
+//   game's shadows drawn over the cleared background): black with alpha 1 - k, so the
+//   shadows land on the host background;
+// - other pixels touching the keyed area: the key colour's spill is removed.
+static void KeyColour(std::vector<uint8_t> &rgba, uint32_t stride, uint32_t width, uint32_t height, uint32_t key)
+{
+    constexpr int kTol = 24;
+    const int kr = static_cast<int>((key >> 16) & 0xFFu), kg = static_cast<int>((key >> 8) & 0xFFu),
+              kb = static_cast<int>(key & 0xFFu);
+    const bool magentaLike = kr > 128 && kb > 128 && kg < 64;
+    static std::vector<uint8_t> s_keyed; // 0 = opaque, 1 = key, 2 = darkened key
+    static std::vector<uint32_t> s_stack;
+    s_keyed.assign(static_cast<size_t>(width) * height, 0u);
+    s_stack.clear();
+    auto px = [&](uint32_t i) { return rgba.data() + (static_cast<size_t>(i / width) * stride + i % width) * 4u; };
+    for (uint32_t i = 0; i < width * height; ++i)
+    {
+        uint8_t *p = px(i);
+        if (std::abs(p[0] - kr) <= kTol && std::abs(p[1] - kg) <= kTol && std::abs(p[2] - kb) <= kTol)
+        {
+            s_keyed[i] = 1u;
+            p[0] = p[1] = p[2] = 0u;
+            p[3] = 0u;
+            s_stack.push_back(i);
+        }
+        else
+            p[3] = 255u;
+    }
+    if (!magentaLike)
+        return;
+    auto darkened = [&](const uint8_t *p) { return p[1] <= kTol && std::abs(p[0] - p[2]) <= 32 && (p[0] | p[2]) != 0; };
+    while (!s_stack.empty())
+    {
+        const uint32_t i = s_stack.back();
+        s_stack.pop_back();
+        const uint32_t x = i % width, y = i / width;
+        const uint32_t n[4] = {x > 0 ? i - 1 : UINT32_MAX, x + 1 < width ? i + 1 : UINT32_MAX,
+                               y > 0 ? i - width : UINT32_MAX, y + 1 < height ? i + width : UINT32_MAX};
+        for (uint32_t j : n)
+        {
+            if (j == UINT32_MAX || s_keyed[j])
+                continue;
+            uint8_t *p = px(j);
+            if (!darkened(p))
+                continue;
+            const float k = std::min(1.0f, (p[0] + p[2]) / static_cast<float>(kr + kb));
+            s_keyed[j] = 2u;
+            p[0] = p[1] = p[2] = 0u;
+            p[3] = static_cast<uint8_t>(std::lround(255.0f * (1.0f - k)));
+            s_stack.push_back(j);
+        }
+    }
+    for (uint32_t i = 0; i < width * height; ++i)
+    {
+        if (s_keyed[i])
+            continue;
+        const uint32_t x = i % width, y = i / width;
+        const bool edge = (x > 0 && s_keyed[i - 1]) || (x + 1 < width && s_keyed[i + 1]) ||
+                          (y > 0 && s_keyed[i - width]) || (y + 1 < height && s_keyed[i + width]);
+        if (!edge)
+            continue;
+        uint8_t *p = px(i);
+        const int m = std::min(p[0], p[2]);
+        if (m > p[1])
+        {
+            const int d = m - p[1];
+            p[0] = static_cast<uint8_t>(p[0] - d);
+            p[2] = static_cast<uint8_t>(p[2] - d);
+        }
     }
 }
 
@@ -557,7 +656,13 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         }
     }
 
-    if (rt->backgroundKeying())
+    if (const uint32_t key = rt->backgroundKeyColor())
+        // Always on when configured: a frame cleared with the key colour just before keying
+        // turned off must not show it.
+        KeyColour(s_uploadBuffer, static_cast<uint32_t>(tex.width),
+                  std::min<uint32_t>(width, static_cast<uint32_t>(tex.width)),
+                  std::min<uint32_t>(height, static_cast<uint32_t>(tex.height)), key);
+    else if (rt->backgroundKeying())
         KeyBackground(s_uploadBuffer, static_cast<uint32_t>(tex.width),
                       std::min<uint32_t>(width, static_cast<uint32_t>(tex.width)),
                       std::min<uint32_t>(height, static_cast<uint32_t>(tex.height)));

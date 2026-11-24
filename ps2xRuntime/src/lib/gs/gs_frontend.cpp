@@ -678,6 +678,140 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
     return true;
 }
 
+// Finds the game's frame clear (untextured, unblended, black SPRITE covering at least
+// 600x200 pixels) in a GIF packet and returns a copy where its RGBAQ is the key colour.
+// Handles PACKED (RGBAQ, XYZ2/XYZF2, PRIM, A+D) and REGLIST tags; returns data unchanged
+// when there is nothing to patch.
+const uint8_t *GS::patchClearSprites(const uint8_t *data, uint32_t sizeBytes, uint32_t key)
+{
+    struct Rgbaq { uint32_t offset; bool packed; bool ad; };
+    std::vector<Rgbaq> patches;
+    Rgbaq lastColour{0, false, false};
+    bool haveColour = false, colourBlack = false;
+    int vtx = 0;
+    int x0 = 0, y0 = 0;
+    auto onPrim = [&](uint64_t v) { m_keyPrim = v & 0x7FFu; vtx = 0; };
+    auto isClearPrim = [&]() {
+        return (m_keyPrim & 0x7u) == 6u /*SPRITE*/ && ((m_keyPrim >> 4) & 1u) == 0u /*TME*/ && ((m_keyPrim >> 6) & 1u) == 0u /*ABE*/;
+    };
+    auto onXyz = [&](int x, int y) {
+        if (!isClearPrim())
+        {
+            vtx = 0;
+            return;
+        }
+        if (vtx == 0)
+        {
+            x0 = x; y0 = y; vtx = 1;
+            return;
+        }
+        vtx = 0;
+        if (haveColour && colourBlack && std::abs(x - x0) >= 600 * 16 && std::abs(y - y0) >= 200 * 16)
+            patches.push_back(lastColour);
+    };
+    uint32_t offset = 0;
+    while (offset + 16 <= sizeBytes)
+    {
+        const uint64_t tagLo = loadLE64(data + offset);
+        const uint64_t tagHi = loadLE64(data + offset + 8);
+        offset += 16;
+        const uint32_t nloop = static_cast<uint32_t>(tagLo & 0x7FFF);
+        const uint8_t flg = static_cast<uint8_t>((tagLo >> 58) & 0x3);
+        uint32_t nreg = static_cast<uint32_t>((tagLo >> 60) & 0xF);
+        if (nreg == 0)
+            nreg = 16;
+        if (((tagLo >> 46) & 1) != 0)
+            onPrim((tagLo >> 47) & 0x7FF);
+        if (flg == GIF_FMT_PACKED)
+        {
+            for (uint32_t loop = 0; loop < nloop; ++loop)
+                for (uint32_t r = 0; r < nreg; ++r)
+                {
+                    if (offset + 16 > sizeBytes)
+                        goto done;
+                    const uint8_t reg = static_cast<uint8_t>((tagHi >> (r * 4)) & 0xF);
+                    const uint64_t lo = loadLE64(data + offset), hi = loadLE64(data + offset + 8);
+                    if (reg == GS_REG_RGBAQ)
+                    {
+                        lastColour = {offset, true, false};
+                        haveColour = true;
+                        colourBlack = (lo & 0xFFull) == 0 && ((lo >> 32) & 0xFFull) == 0 && (hi & 0xFFull) == 0;
+                    }
+                    else if (reg == GS_REG_PRIM)
+                        onPrim(lo);
+                    else if (reg == GS_REG_XYZ2 || reg == GS_REG_XYZF2)
+                        onXyz(static_cast<int>(lo & 0xFFFF), static_cast<int>((lo >> 32) & 0xFFFF));
+                    else if (reg == 0x0E) // A+D
+                    {
+                        const uint8_t addr = static_cast<uint8_t>(hi & 0xFF);
+                        if (addr == GS_REG_RGBAQ)
+                        {
+                            lastColour = {offset, false, true};
+                            haveColour = true;
+                            colourBlack = (lo & 0xFFFFFFull) == 0;
+                        }
+                        else if (addr == GS_REG_PRIM)
+                            onPrim(lo);
+                        else if (addr == GS_REG_XYZ2 || addr == GS_REG_XYZF2)
+                            onXyz(static_cast<int>(lo & 0xFFFF), static_cast<int>((lo >> 16) & 0xFFFF));
+                    }
+                    offset += 16;
+                }
+        }
+        else if (flg == GIF_FMT_REGLIST)
+        {
+            for (uint32_t loop = 0; loop < nloop; ++loop)
+                for (uint32_t r = 0; r < nreg; ++r)
+                {
+                    if (offset + 8 > sizeBytes)
+                        goto done;
+                    const uint8_t reg = static_cast<uint8_t>((tagHi >> (r * 4)) & 0xF);
+                    const uint64_t v = loadLE64(data + offset);
+                    if (reg == GS_REG_RGBAQ)
+                    {
+                        lastColour = {offset, false, false};
+                        haveColour = true;
+                        colourBlack = (v & 0xFFFFFFull) == 0;
+                    }
+                    else if (reg == GS_REG_PRIM)
+                        onPrim(v);
+                    else if (reg == GS_REG_XYZ2 || reg == GS_REG_XYZF2)
+                        onXyz(static_cast<int>(v & 0xFFFF), static_cast<int>((v >> 16) & 0xFFFF));
+                    offset += 8;
+                }
+            if ((nloop * nreg) & 1)
+                offset += 8;
+        }
+        else
+            offset += nloop * 16;
+    }
+done:
+    if (patches.empty())
+        return data;
+    m_keyPatchBuffer.assign(data, data + sizeBytes);
+    const uint8_t r = static_cast<uint8_t>((key >> 16) & 0xFF), g = static_cast<uint8_t>((key >> 8) & 0xFF),
+                  b = static_cast<uint8_t>(key & 0xFF);
+    for (const Rgbaq &p : patches)
+    {
+        uint8_t *q = m_keyPatchBuffer.data() + p.offset;
+        if (p.packed) // R bits 0-7, G 32-39, B 64-71
+        {
+            q[0] = r; q[4] = g; q[8] = b;
+        }
+        else // register format: R 0-7, G 8-15, B 16-23
+        {
+            q[0] = r; q[1] = g; q[2] = b;
+        }
+    }
+    static uint32_t s_logged = 0u;
+    if (s_logged < 3u)
+    {
+        ++s_logged;
+        std::cerr << "[gs:key] frame clear sprite recoloured (" << patches.size() << " in a " << sizeBytes << "-byte packet)" << std::endl;
+    }
+    return m_keyPatchBuffer.data();
+}
+
 void GS::processGIFPacketNow(const uint8_t *data, uint32_t sizeBytes)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
@@ -685,7 +819,10 @@ void GS::processGIFPacketNow(const uint8_t *data, uint32_t sizeBytes)
         return;
     m_dumpRecorder.recordTransfer(3u, data, sizeBytes);
     if (m_parallel)
-        m_parallel->transfer(3u, data, sizeBytes);
+    {
+        const uint32_t key = m_clearKeyColor.load(std::memory_order_relaxed);
+        m_parallel->transfer(3u, key ? patchClearSprites(data, sizeBytes, key) : data, sizeBytes);
+    }
 
     if (tryProcessNativeImageUploadPacket(data, sizeBytes))
         return;

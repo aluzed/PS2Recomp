@@ -165,6 +165,10 @@ public:
                                           uint32_t *outSourceFbp = nullptr,
                                           bool *outUsedPreferred = nullptr) const;
     bool clearFramebufferContext(uint32_t contextIndex, uint32_t rgba);
+    // Host background keying (hardware GS): while non-zero (0xRRGGBB), untextured, unblended
+    // black SPRITEs of at least 600x200 pixels (the game's frame clear) are drawn in this
+    // colour instead, so the host can key exactly the cleared background.
+    void setClearKeyColor(uint32_t rgb) { m_clearKeyColor.store(rgb, std::memory_order_relaxed); }
     bool clearActiveFramebuffer(uint32_t rgba);
     uint64_t nativeImageUploadCount() const { return m_nativeImageUploadCount; }
     uint64_t nativePackedGIFPacketCount() const { return m_nativePackedGIFPacketCount; }
@@ -194,6 +198,10 @@ private:
     // True once the hardware GS scans out on vsync markers: the host only
     // takes the latest image, without waiting for the GS queue.
     std::atomic<bool> m_vsyncScanout{false};
+    std::atomic<uint32_t> m_clearKeyColor{0};
+    uint64_t m_keyPrim = 0; // PRIM as seen by the clear-key patcher
+    const uint8_t *patchClearSprites(const uint8_t *data, uint32_t sizeBytes, uint32_t key);
+    std::vector<uint8_t> m_keyPatchBuffer;
     void writeRegisterNow(uint8_t regAddr, uint64_t value);
     bool enqueueIfThreaded(QueuedCommand &&command, size_t bytes);
     void workerLoop();

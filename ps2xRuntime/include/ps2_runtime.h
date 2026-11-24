@@ -374,6 +374,12 @@ public:
     // pure black areas) become transparent in the presented game frame.
     void setBackgroundKeying(bool on) { m_backgroundKeying.store(on, std::memory_order_relaxed); }
     bool backgroundKeying() const { return m_backgroundKeying.load(std::memory_order_relaxed); }
+    // Key colour (0xRRGGBB, 0 = off). When set, the game's frame clear (sceGsSwapDBuffDc)
+    // uses this colour while keying is on, and only pixels of this colour (plus a despill
+    // of the blended edges next to them) become transparent: dark parts of the fighters
+    // and small gaps between limbs are handled correctly, unlike pure-black keying.
+    void setBackgroundKeyColor(uint32_t rgb) { m_backgroundKeyColor.store(rgb, std::memory_order_relaxed); }
+    uint32_t backgroundKeyColor() const { return m_backgroundKeyColor.load(std::memory_order_relaxed); }
     void setDebugUiCallbacks(DebugUiCallback initCallback,
                              DebugUiCallback drawCallback,
                              DebugUiCallback shutdownCallback,
@@ -610,6 +616,7 @@ private:
     HostUnderlayCallback m_hostUnderlayCallback = nullptr;
     void *m_hostUnderlayUserData = nullptr;
     std::atomic<bool> m_backgroundKeying{false};
+    std::atomic<uint32_t> m_backgroundKeyColor{0};
     void *m_hostOverlayUserData = nullptr;
     DebugUiCallback m_debugUiInitCallback = nullptr;
     DebugUiCallback m_debugUiDrawCallback = nullptr;

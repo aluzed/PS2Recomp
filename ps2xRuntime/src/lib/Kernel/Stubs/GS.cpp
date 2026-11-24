@@ -1195,6 +1195,23 @@ namespace ps2_stubs
             setReturnS32(ctx, -1);
             return;
         }
+        if (std::getenv("PS2X_CLEAR_TRACE"))
+        {
+            static uint32_t s_n = 0u;
+            if (s_n++ % 60u == 0u)
+                std::cerr << "[gs:clear] swapdbuffdc which=" << which << " seeded0=" << hasSeededGsClearPacket(db.clear0)
+                          << " seeded1=" << hasSeededGsClearPacket(db.clear1) << " rgbaq0=0x" << std::hex << db.clear0.rgbaq.value
+                          << " rgbaq1=0x" << db.clear1.rgbaq.value << " keying=" << std::dec << runtime->backgroundKeying() << std::endl;
+        }
+        // Host background keying: clear with the key colour instead of the game's colour.
+        if (runtime->backgroundKeying())
+            if (const uint32_t key = runtime->backgroundKeyColor())
+            {
+                const uint64_t rgba = static_cast<uint64_t>((key >> 16) & 0xFFu) | (static_cast<uint64_t>((key >> 8) & 0xFFu) << 8) |
+                                      (static_cast<uint64_t>(key & 0xFFu) << 16) | (0x80ull << 24);
+                db.clear0.rgbaq.value = (db.clear0.rgbaq.value & 0xFFFFFFFF00000000ull) | rgba;
+                db.clear1.rgbaq.value = (db.clear1.rgbaq.value & 0xFFFFFFFF00000000ull) | rgba;
+            }
 
         applyGsDispEnv(runtime, db.disp[which]);
         static uint32_t s_swapDbuffLogCount = 0u;
