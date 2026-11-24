@@ -380,6 +380,10 @@ public:
     // and small gaps between limbs are handled correctly, unlike pure-black keying.
     void setBackgroundKeyColor(uint32_t rgb) { m_backgroundKeyColor.store(rgb, std::memory_order_relaxed); }
     uint32_t backgroundKeyColor() const { return m_backgroundKeyColor.load(std::memory_order_relaxed); }
+    // While on, the presented game frame is not updated (the last one is shown again): hides
+    // short phases where the game draws nothing worth showing (e.g. behind a removed backdrop).
+    void setHoldFrame(bool on) { m_holdFrame.store(on, std::memory_order_relaxed); }
+    bool holdFrame() const { return m_holdFrame.load(std::memory_order_relaxed); }
     void setDebugUiCallbacks(DebugUiCallback initCallback,
                              DebugUiCallback drawCallback,
                              DebugUiCallback shutdownCallback,
@@ -617,6 +621,7 @@ private:
     void *m_hostUnderlayUserData = nullptr;
     std::atomic<bool> m_backgroundKeying{false};
     std::atomic<uint32_t> m_backgroundKeyColor{0};
+    std::atomic<bool> m_holdFrame{false};
     void *m_hostOverlayUserData = nullptr;
     DebugUiCallback m_debugUiInitCallback = nullptr;
     DebugUiCallback m_debugUiDrawCallback = nullptr;
