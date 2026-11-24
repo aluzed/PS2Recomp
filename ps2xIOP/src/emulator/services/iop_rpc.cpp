@@ -6,6 +6,9 @@
 #include "ps2x/iop/iop_host.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <map>
 #include <array>
 #include <cstring>
 #include <limits>
@@ -281,6 +284,24 @@ namespace ps2x::iop::detail
             return result;
 
         RpcServer &server = serverIt->second;
+        {
+            // PS2X_RPC_TRACE=1: first calls of each (sid, function) and periodic counts.
+            static const bool trace = std::getenv("PS2X_RPC_TRACE") != nullptr;
+            static std::map<uint64_t, uint64_t> counts;
+            if (trace)
+            {
+                const uint64_t key = (static_cast<uint64_t>(request.sid) << 32u) | request.function;
+                const uint64_t n = ++counts[key];
+                if (n <= 3u || (n & (n - 1u)) == 0u)
+                {
+                    uint32_t words[4] = {};
+                    (void)m_host.readGuest(request.send.address, words, std::min<uint32_t>(request.send.size, 16u));
+                    std::fprintf(stderr, "[RPC] sid=0x%08x fn=0x%x n=%llu send=%u recv=%u data=%08x %08x %08x %08x\n",
+                                 request.sid, request.function, static_cast<unsigned long long>(n), request.send.size,
+                                 request.receive.size, words[0], words[1], words[2], words[3]);
+                }
+            }
+        }
         if (request.send.size != 0u && server.buffer != 0u)
         {
             const uint32_t copySize = std::min<uint32_t>(request.send.size, IopMemory::RamSize - std::min(server.buffer, IopMemory::RamSize));
@@ -300,6 +321,12 @@ namespace ps2x::iop::detail
                                                                server.gp);
         if (returnPointer == 0u)
             returnPointer = server.buffer;
+        if (std::getenv("PS2X_RPC_TRACE") && returnPointer != 0u)
+        {
+            uint32_t r[4] = {};
+            (void)m_memory.readRam(returnPointer, r, sizeof(r));
+            std::fprintf(stderr, "[RPC]   -> sid=0x%08x fn=0x%x ret=%08x %08x %08x %08x\n", request.sid, request.function, r[0], r[1], r[2], r[3]);
+        }
         if (request.receive.address != 0u && request.receive.size != 0u && returnPointer != 0u)
         {
             const uint32_t physical = IopMemory::physicalAddress(returnPointer);

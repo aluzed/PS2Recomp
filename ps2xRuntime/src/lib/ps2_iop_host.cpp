@@ -268,6 +268,11 @@ void PS2IopHostAdapter::freeGuest(uint32_t address)
     m_runtime.guestFree(address);
 }
 
+void PS2IopHostAdapter::audioOutput(const int16_t *frames, size_t count)
+{
+    m_runtime.audioBackend().pushPcm(frames, count);
+}
+
 void PS2IopHostAdapter::audioCommand(uint32_t sid,
                                      uint32_t function,
                                      ps2x::iop::GuestBuffer send,

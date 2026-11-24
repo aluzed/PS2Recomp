@@ -18,6 +18,8 @@
 #include "iop_emulator_const.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cctype>
 #include <map>
 #include <optional>
@@ -111,6 +113,36 @@ namespace ps2x::iop::detail
               loadcore(memory, imports)
         {
             reset();
+            memory.spu2().setOutput([this](const int16_t *frames, uint32_t count)
+                                    { host.audioOutput(frames, count); });
+        }
+
+        // SPU2 interrupt (line 9) and AutoDMA completions (DMA 4/7 lines).
+        void serviceSpuInterrupt()
+        {
+            if (servicingSpuInterrupt || !memory.spu2().interruptPending())
+                return;
+            const uint32_t admaDone = memory.spu2().takeAdmaCompletions();
+            const bool spuIrq = memory.spu2().takeInterrupt();
+            servicingSpuInterrupt = true;
+            try
+            {
+                for (int core = 0; core < 2; ++core)
+                {
+                    if ((admaDone & (1u << core)) == 0u)
+                        continue;
+                    memory.spu2().dmaComplete(core);
+                    (void)intrman.dispatchInterrupt(core ? 0x28 : 0x24, *this);
+                }
+                if (spuIrq)
+                    (void)intrman.dispatchInterrupt(IopSpu2::SpuInterruptLine, *this);
+            }
+            catch (...)
+            {
+                servicingSpuInterrupt = false;
+                throw;
+            }
+            servicingSpuInterrupt = false;
         }
 
         void reset()
@@ -123,6 +155,7 @@ namespace ps2x::iop::detail
             cdvd.reset();
             intrman.reset();
             timrman.reset();
+            vblank.reset();
             ioman.reset();
             pendingDmaInterrupts.clear();
             pendingGuestCallbacks.clear();
@@ -135,6 +168,7 @@ namespace ps2x::iop::detail
             lastError.clear();
             servicingDmaInterrupts = false;
             servicingGuestCallbacks = false;
+            servicingSpuInterrupt = false;
             callDepth = 0u;
             secrMcCommandHandler = {};
             secrMcDevIdHandler = {};
@@ -244,7 +278,29 @@ namespace ps2x::iop::detail
             {
                 cpu.gpr[2] = value;
             };
+            {
+                // PS2X_IMPORT_TRACE=1: thread/semaphore/event/CD imports (bring-up of drivers).
+                static const bool trace = std::getenv("PS2X_IMPORT_TRACE") != nullptr;
+                static uint32_t logged = 0;
+                if (trace && logged < 6000u &&
+                    (iequals(call.library, "thbase") || iequals(call.library, "thsemap") ||
+                     iequals(call.library, "thevent") || iequals(call.library, "cdvdman") ||
+                     iequals(call.library, "ioman") || iequals(call.library, "libsd") || iequals(call.library, "sysclib")))
+                {
+                    ++logged;
+                    std::fprintf(stderr, "[IMP] %s:%u ra=0x%x a0=0x%x a1=0x%x a2=0x%x thread=%d cyc=%llu\n", call.library.c_str(),
+                                 call.ordinal, cpu.gpr[31], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6],
+                                 kernel.currentThreadId(), static_cast<unsigned long long>(totalCycles));
+                }
+            }
 
+            if (kernel.currentThreadId() < 0 && iequals(call.library, "thsemap") && call.ordinal == 8u &&
+                kernel.semaphoreCount(static_cast<int>(a0)) == 0)
+            {
+                waitSemaphoreOutsideThread(static_cast<int>(a0));
+                if (std::getenv("PS2X_IMPORT_TRACE"))
+                    std::fprintf(stderr, "[IMP] outside-thread WaitSema(%u) after yield: count=%d\n", a0, kernel.semaphoreCount(static_cast<int>(a0)));
+            }
             if (iequals(call.library, "sysmem") && sysmem.dispatchImport(call.ordinal, cpu))
                 return ImportDisposition::Handled;
 
@@ -410,6 +466,8 @@ namespace ps2x::iop::detail
                     servicePendingDmaInterrupts();
                 if (!servicingGuestCallbacks && !pendingGuestCallbacks.empty())
                     servicePendingGuestCallbacks();
+                if (!servicingSpuInterrupt && memory.spu2().interruptPending())
+                    serviceSpuInterrupt();
             }
             activeCpu = previous;
             return static_cast<uint32_t>(totalInstructions - start);
@@ -502,7 +560,11 @@ namespace ps2x::iop::detail
             try
             {
                 for (const int irq : completed)
+                {
+                    if (irq == 0x24 || irq == 0x28)
+                        memory.spu2().dmaComplete(irq == 0x28 ? 1 : 0);
                     (void)intrman.dispatchInterrupt(irq, *this);
+                }
             }
             catch (...)
             {
@@ -553,34 +615,89 @@ namespace ps2x::iop::detail
             servicingGuestCallbacks = false;
         }
 
+        // Runs IOP threads, interrupts and timers until `target`.
+        void scheduleUntil(uint64_t target)
+        {
+            while (totalCycles < target)
+            {
+                serviceSpuInterrupt();
+                servicePendingDmaInterrupts();
+                servicePendingGuestCallbacks();
+                timrman.serviceDue(totalCycles, *this);
+                vblank.serviceDue(totalCycles, *this);
+                IopThread *next = kernel.beginNextReady(totalCycles);
+                if (!next)
+                {
+                    uint64_t nextWake = kernel.nextWakeCycle(target);
+                    for (const auto &[irq, completionCycle] : pendingDmaInterrupts)
+                        nextWake = std::min(nextWake, completionCycle);
+                    if (!pendingGuestCallbacks.empty())
+                        nextWake = std::min(nextWake, pendingGuestCallbacks.begin()->first);
+                    nextWake = timrman.nextEventCycle(nextWake);
+                    nextWake = vblank.nextEventCycle(nextWake);
+                    // Idle: still wake every 32 samples so SPU2 IRQs are delivered on time.
+                    nextWake = std::min(nextWake, totalCycles + 32u * IopSpu2::IopCyclesPerSample);
+                    totalCycles = std::max(totalCycles + 1u, std::min(target, nextWake));
+                    continue;
+                }
+                const uint64_t before = totalCycles;
+                runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
+                kernel.endTimeslice(*next, kThreadReturnSentinel);
+                if (totalCycles == before)
+                    ++totalCycles;
+            }
+        }
+
+        // Guest code running outside any thread (an RPC server function) cannot
+        // block. Street Fighter EX3's sound driver does WaitSema on its file
+        // driver lock there; instead of failing, let the other threads run in
+        // short slices until the semaphore is available (same idea as the
+        // Quadzilla ATV port's yieldFromGuestCall).
+        void waitSemaphoreOutsideThread(int id)
+        {
+            constexpr uint64_t kSliceCycles = 4096u;
+            constexpr int kMaxSlices = 2048;
+            if (outsideThreadYieldDepth >= 2u)
+                return;
+            ++outsideThreadYieldDepth;
+            try
+            {
+                for (int i = 0; i < kMaxSlices && kernel.semaphoreCount(id) == 0; ++i)
+                    scheduleUntil(totalCycles + kSliceCycles);
+            }
+            catch (...)
+            {
+                --outsideThreadYieldDepth;
+                throw;
+            }
+            --outsideThreadYieldDepth;
+        }
+
         void runCycles(uint64_t cycles) noexcept
         {
             try
             {
-                const uint64_t target = totalCycles + cycles;
-                while (totalCycles < target)
+                memory.spu2().advanceIopCycles(cycles);
                 {
-                    servicePendingDmaInterrupts();
-                    servicePendingGuestCallbacks();
-                    timrman.serviceDue(totalCycles, *this);
-                    IopThread *next = kernel.beginNextReady(totalCycles);
-                    if (!next)
+                    // PS2X_IOP_DUMP_AT=<seconds>: write IOP RAM to iop_ram.bin once (bring-up).
+                    static const uint64_t dumpAt = []
                     {
-                        uint64_t nextWake = kernel.nextWakeCycle(target);
-                        for (const auto &[irq, completionCycle] : pendingDmaInterrupts)
-                            nextWake = std::min(nextWake, completionCycle);
-                        if (!pendingGuestCallbacks.empty())
-                            nextWake = std::min(nextWake, pendingGuestCallbacks.begin()->first);
-                        nextWake = timrman.nextEventCycle(nextWake);
-                        totalCycles = std::max(totalCycles + 1u, std::min(target, nextWake));
-                        continue;
+                        const char *v = std::getenv("PS2X_IOP_DUMP_AT");
+                        return v ? static_cast<uint64_t>(std::atof(v) * 36864000.0) : UINT64_MAX;
+                    }();
+                    static bool dumped = false;
+                    if (!dumped && totalCycles >= dumpAt)
+                    {
+                        dumped = true;
+                        if (FILE *f = std::fopen("iop_ram.bin", "wb"))
+                        {
+                            const auto ram = memory.ram();
+                            std::fwrite(ram.data(), 1, ram.size(), f);
+                            std::fclose(f);
+                        }
                     }
-                    const uint64_t before = totalCycles;
-                    runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
-                    kernel.endTimeslice(*next, kThreadReturnSentinel);
-                    if (totalCycles == before)
-                        ++totalCycles;
                 }
+                scheduleUntil(totalCycles + cycles);
             }
             catch (...)
             {
@@ -706,6 +823,8 @@ namespace ps2x::iop::detail
         std::string lastError;
         bool servicingDmaInterrupts = false;
         bool servicingGuestCallbacks = false;
+        bool servicingSpuInterrupt = false;
+        uint32_t outsideThreadYieldDepth = 0u;
         uint32_t callDepth = 0u;
         GuestCallback secrMcCommandHandler;
         GuestCallback secrMcDevIdHandler;

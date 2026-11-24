@@ -47,6 +47,9 @@ namespace ps2x::iop::detail
     class IopKernel
     {
     public:
+        [[nodiscard]] int currentThreadId() const noexcept { return m_currentThread ? m_currentThread->id : -1; }
+        // Current count of a semaphore, -1 if it does not exist.
+        [[nodiscard]] int semaphoreCount(int id) const;
         explicit IopKernel(IopMemory &memory) noexcept;
 
         void reset();

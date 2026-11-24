@@ -773,4 +773,10 @@ namespace ps2x::iop::detail
             }
         }
     }
+
+    int IopKernel::semaphoreCount(int id) const
+    {
+        const auto it = m_semaphores.find(id);
+        return it == m_semaphores.end() ? -1 : static_cast<int>(it->second.current);
+    }
 }

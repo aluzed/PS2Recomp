@@ -1,6 +1,8 @@
 #include "runtime/ps2_audio.h"
 #include "runtime/ps2_memory.h"
 #include "ps2_host_backend.h"
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -325,4 +327,124 @@ void PS2AudioBackend::stopAll()
     }
     m_impl->activeSounds.clear();
 #endif
+}
+
+namespace
+{
+    constexpr size_t kRingFrames = 48000u;   // 1 s capacity
+    constexpr size_t kTargetFrames = 2048u;  // ~43 ms of latency
+    constexpr size_t kMaxFrames = 9600u;     // trim beyond 200 ms
+    PS2AudioBackend *g_streamOwner = nullptr;
+#if !defined(PLATFORM_VITA)
+    AudioStream g_stream{};
+
+    void streamCallback(void *buffer, unsigned int frames)
+    {
+        if (g_streamOwner)
+            g_streamOwner->pullPcm(static_cast<int16_t *>(buffer), frames);
+        else
+            std::memset(buffer, 0, static_cast<size_t>(frames) * 4u);
+    }
+#endif
+}
+
+void PS2AudioBackend::startStream()
+{
+#if !defined(PLATFORM_VITA)
+    if (!m_audioReady || m_streamActive)
+        return;
+    if (std::getenv("PS2X_AUDIO_MUTE"))
+        return; // test runs: no sound on the speakers (PS2X_AUDIO_DUMP still records)
+    {
+        std::lock_guard<std::mutex> lock(m_streamMutex);
+        m_ring.assign(kRingFrames * 2u, 0);
+        m_ringRead = m_ringCount = 0;
+    }
+    SetAudioStreamBufferSizeDefault(1024);
+    g_stream = LoadAudioStream(48000, 16, 2);
+    if (!IsAudioStreamValid(g_stream))
+        return;
+    g_streamOwner = this;
+    SetAudioStreamCallback(g_stream, streamCallback);
+    PlayAudioStream(g_stream);
+    m_streamActive = true;
+#endif
+}
+
+void PS2AudioBackend::stopStream()
+{
+#if !defined(PLATFORM_VITA)
+    if (!m_streamActive)
+        return;
+    StopAudioStream(g_stream);
+    UnloadAudioStream(g_stream);
+    g_streamOwner = nullptr;
+    m_streamActive = false;
+#endif
+}
+
+void PS2AudioBackend::pushPcm(const int16_t *frames, size_t count)
+{
+    if (!frames || count == 0)
+        return;
+    {
+        // PS2X_AUDIO_DUMP=<file>: raw interleaved s16le 48 kHz stereo of the SPU2 output.
+        static FILE *dump = []() -> FILE *
+        {
+            const char *path = std::getenv("PS2X_AUDIO_DUMP");
+            return path ? std::fopen(path, "wb") : nullptr;
+        }();
+        if (dump)
+        {
+            std::fwrite(frames, 4u, count, dump);
+            std::fflush(dump);
+        }
+    }
+    if (!m_streamActive)
+        return;
+    std::lock_guard<std::mutex> lock(m_streamMutex);
+    const size_t cap = m_ring.size() / 2u;
+    for (size_t i = 0; i < count; ++i)
+    {
+        const size_t w = (m_ringRead + m_ringCount) % cap;
+        m_ring[w * 2u] = frames[i * 2u];
+        m_ring[w * 2u + 1u] = frames[i * 2u + 1u];
+        if (m_ringCount < cap)
+            ++m_ringCount;
+        else
+            m_ringRead = (m_ringRead + 1u) % cap;
+    }
+    m_pushed += count;
+    if (m_ringCount > kMaxFrames)
+    {
+        // Emulation ran ahead of the sound card: drop the oldest audio.
+        const size_t drop = m_ringCount - kTargetFrames;
+        m_ringRead = (m_ringRead + drop) % cap;
+        m_ringCount -= drop;
+        m_dropped += drop;
+    }
+    static const bool trace = std::getenv("PS2X_SPU2_TRACE") != nullptr;
+    if (trace && (m_pushed / 48000u) != ((m_pushed - count) / 48000u) && (m_pushed / 48000u) % 5u == 0u)
+        std::fprintf(stderr, "[audio] pushed=%llus buffered=%zu underruns=%llu dropped=%llu\n",
+                     static_cast<unsigned long long>(m_pushed / 48000u), m_ringCount,
+                     static_cast<unsigned long long>(m_underruns), static_cast<unsigned long long>(m_dropped));
+}
+
+void PS2AudioBackend::pullPcm(int16_t *out, size_t count)
+{
+    std::lock_guard<std::mutex> lock(m_streamMutex);
+    const size_t cap = m_ring.size() / 2u;
+    size_t i = 0;
+    for (; i < count && m_ringCount > 0 && cap > 0; ++i)
+    {
+        out[i * 2u] = m_ring[m_ringRead * 2u];
+        out[i * 2u + 1u] = m_ring[m_ringRead * 2u + 1u];
+        m_ringRead = (m_ringRead + 1u) % cap;
+        --m_ringCount;
+    }
+    if (i < count)
+    {
+        ++m_underruns;
+        std::memset(out + i * 2u, 0, (count - i) * 4u);
+    }
 }

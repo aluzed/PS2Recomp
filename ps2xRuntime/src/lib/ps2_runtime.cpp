@@ -837,6 +837,7 @@ PS2Runtime::~PS2Runtime()
 #else
         if (IsAudioDeviceReady())
         {
+            m_audioBackend.stopStream();
             CloseAudioDevice();
             m_audioBackend.setAudioReady(false);
         }
@@ -1069,6 +1070,7 @@ bool PS2Runtime::initialize(const char *title)
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
         InitAudioDevice();
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
+        m_audioBackend.startStream();
 #endif
         SetTargetFPS(60);
         if (m_debugUiInitCallback)

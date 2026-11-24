@@ -4,6 +4,7 @@
 #include "../core/iop_memory.h"
 
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -124,15 +125,109 @@ namespace ps2x::iop::detail
         case 18: // prnt
             setV0(0);
             return true;
-        case 19: // sprintf: preserve useful literal formats even before full vararg formatting.
-        case 42: // vsprintf fallback: copy format literal.
+        case 19: // sprintf(dst, fmt, ...): args in a2, a3, then the caller's stack from sp+16
+        case 42: // vsprintf(dst, fmt, va_list): args in memory at a2
         {
-            const std::string format = m_memory.readString(a1, 4096u);
-            for (size_t i = 0; i <= format.size(); ++i)
+            // Street Fighter EX3's sound driver builds bank names with
+            // sprintf("%s.vh", name); copying the format left "%s.vh".
+            uint32_t argIndex = 0;
+            const uint32_t sp = cpu.gpr[29];
+            const auto nextArg = [&]() -> uint32_t
             {
-                m_memory.write8(a0 + static_cast<uint32_t>(i), i < format.size() ? static_cast<uint8_t>(format[i]) : 0u);
+                const uint32_t i = argIndex++;
+                if (ordinal == 42u)
+                    return m_memory.read32(a2 + i * 4u);
+                if (i == 0u)
+                    return a2;
+                if (i == 1u)
+                    return cpu.gpr[7];
+                return m_memory.read32(sp + 16u + (i - 2u) * 4u);
+            };
+            const std::string format = m_memory.readString(a1, 4096u);
+            std::string out;
+            for (size_t i = 0; i < format.size(); ++i)
+            {
+                const char c = format[i];
+                if (c != '%')
+                {
+                    out.push_back(c);
+                    continue;
+                }
+                if (++i >= format.size())
+                    break;
+                bool leftAlign = false, zeroPad = false;
+                for (; i < format.size() && (format[i] == '-' || format[i] == '0' || format[i] == '+' || format[i] == ' ' || format[i] == '#'); ++i)
+                {
+                    leftAlign |= format[i] == '-';
+                    zeroPad |= format[i] == '0';
+                }
+                int width = 0;
+                for (; i < format.size() && std::isdigit(static_cast<unsigned char>(format[i])); ++i)
+                    width = width * 10 + (format[i] - '0');
+                int precision = -1;
+                if (i < format.size() && format[i] == '.')
+                {
+                    precision = 0;
+                    for (++i; i < format.size() && std::isdigit(static_cast<unsigned char>(format[i])); ++i)
+                        precision = precision * 10 + (format[i] - '0');
+                }
+                while (i < format.size() && (format[i] == 'l' || format[i] == 'h'))
+                    ++i;
+                if (i >= format.size())
+                    break;
+                const char conv = format[i];
+                std::string field;
+                char buffer[32];
+                switch (conv)
+                {
+                case '%':
+                    out.push_back('%');
+                    continue;
+                case 's':
+                    field = m_memory.readString(nextArg(), 4096u);
+                    if (precision >= 0 && field.size() > static_cast<size_t>(precision))
+                        field.resize(static_cast<size_t>(precision));
+                    zeroPad = false;
+                    break;
+                case 'c':
+                    field.assign(1, static_cast<char>(nextArg()));
+                    zeroPad = false;
+                    break;
+                case 'd':
+                case 'i':
+                    std::snprintf(buffer, sizeof(buffer), "%d", static_cast<int32_t>(nextArg()));
+                    field = buffer;
+                    break;
+                case 'u':
+                    std::snprintf(buffer, sizeof(buffer), "%u", nextArg());
+                    field = buffer;
+                    break;
+                case 'x':
+                case 'X':
+                case 'p':
+                    std::snprintf(buffer, sizeof(buffer), conv == 'X' ? "%X" : "%x", nextArg());
+                    field = buffer;
+                    break;
+                default:
+                    field.push_back('%');
+                    field.push_back(conv);
+                    break;
+                }
+                if (static_cast<int>(field.size()) < width)
+                {
+                    const size_t pad = static_cast<size_t>(width) - field.size();
+                    if (leftAlign)
+                        field.append(pad, ' ');
+                    else if (zeroPad)
+                        field.insert(field[0] == '-' ? 1u : 0u, pad, '0');
+                    else
+                        field.insert(0u, pad, ' ');
+                }
+                out += field;
             }
-            setV0(static_cast<uint32_t>(format.size()));
+            for (size_t i = 0; i <= out.size(); ++i)
+                m_memory.write8(a0 + static_cast<uint32_t>(i), i < out.size() ? static_cast<uint8_t>(out[i]) : 0u);
+            setV0(static_cast<uint32_t>(out.size()));
             return true;
         }
         case 20:

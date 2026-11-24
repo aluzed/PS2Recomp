@@ -25,6 +25,14 @@ public:
     void stopAll();
     void setAudioReady(bool ready) { m_audioReady = ready; }
 
+    // SPU2 output (IOP emulator): interleaved stereo 16-bit frames at 48 kHz,
+    // played through a host audio stream. Audio never paces the game: the
+    // buffer is trimmed when it runs ahead and padded with silence when dry.
+    void startStream();
+    void stopStream();
+    void pushPcm(const int16_t *frames, size_t count);
+    void pullPcm(int16_t *out, size_t count);
+
 private:
     struct DecodedSample
     {
@@ -40,6 +48,11 @@ private:
     std::vector<uint32_t> m_loadOrderSampleKeys;
     std::unordered_map<uint32_t, DecodedSample> m_sampleBank;
     std::mutex m_mutex;
+    std::mutex m_streamMutex;
+    std::vector<int16_t> m_ring;      // interleaved stereo
+    size_t m_ringRead = 0, m_ringCount = 0;
+    bool m_streamActive = false;
+    uint64_t m_underruns = 0, m_dropped = 0, m_pushed = 0;
 
     void playDecodedSample(uint32_t sampleKey, DecodedSample &sample, float pitch, float volume,
                           bool isBgm = false);
