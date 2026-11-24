@@ -1,6 +1,7 @@
 #include "runtime/ps2_audio.h"
 #include "runtime/ps2_memory.h"
 #include "ps2_host_backend.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -402,6 +403,22 @@ void PS2AudioBackend::pushPcm(const int16_t *frames, size_t count)
     }
     if (!m_streamActive)
         return;
+    std::vector<int16_t> mixed;
+    if (m_musicActive.load())
+    {
+        std::lock_guard<std::mutex> musicLock(m_musicMutex);
+        if (!m_music.empty())
+        {
+            mixed.assign(frames, frames + count * 2u);
+            for (size_t i = 0; i < count * 2u; ++i)
+            {
+                mixed[i] = static_cast<int16_t>(std::clamp<int32_t>(mixed[i] + m_music[m_musicPos], -32768, 32767));
+                if (++m_musicPos >= m_music.size())
+                    m_musicPos = 0;
+            }
+            frames = mixed.data();
+        }
+    }
     std::lock_guard<std::mutex> lock(m_streamMutex);
     const size_t cap = m_ring.size() / 2u;
     for (size_t i = 0; i < count; ++i)
@@ -447,4 +464,96 @@ void PS2AudioBackend::pullPcm(int16_t *out, size_t count)
         ++m_underruns;
         std::memset(out + i * 2u, 0, (count - i) * 4u);
     }
+}
+
+namespace
+{
+    // Minimal RIFF/WAVE PCM reader -> interleaved stereo int16 at 48 kHz.
+    bool loadWav48k(const std::string &path, std::vector<int16_t> &out)
+    {
+        FILE *f = std::fopen(path.c_str(), "rb");
+        if (!f)
+            return false;
+        std::vector<uint8_t> data;
+        std::fseek(f, 0, SEEK_END);
+        const long size = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        if (size > 12)
+        {
+            data.resize(static_cast<size_t>(size));
+            if (std::fread(data.data(), 1, data.size(), f) != data.size())
+                data.clear();
+        }
+        std::fclose(f);
+        if (data.size() < 12 || std::memcmp(data.data(), "RIFF", 4) != 0 || std::memcmp(data.data() + 8, "WAVE", 4) != 0)
+            return false;
+        uint16_t format = 0, channels = 0, bits = 0;
+        uint32_t rate = 0;
+        const uint8_t *pcm = nullptr;
+        size_t pcmBytes = 0;
+        for (size_t pos = 12; pos + 8 <= data.size();)
+        {
+            uint32_t len = 0;
+            std::memcpy(&len, data.data() + pos + 4, 4);
+            const uint8_t *body = data.data() + pos + 8;
+            const size_t avail = std::min<size_t>(len, data.size() - pos - 8);
+            if (std::memcmp(data.data() + pos, "fmt ", 4) == 0 && avail >= 16)
+            {
+                std::memcpy(&format, body, 2);
+                std::memcpy(&channels, body + 2, 2);
+                std::memcpy(&rate, body + 4, 4);
+                std::memcpy(&bits, body + 14, 2);
+            }
+            else if (std::memcmp(data.data() + pos, "data", 4) == 0)
+            {
+                pcm = body;
+                pcmBytes = avail;
+            }
+            pos += 8 + len + (len & 1u);
+        }
+        if ((format != 1 && format != 0xFFFE) || !pcm || channels == 0 || channels > 2 || rate == 0 || (bits != 16 && bits != 8))
+            return false;
+        const size_t bytesPerFrame = static_cast<size_t>(channels) * (bits / 8u);
+        const size_t frames = pcmBytes / bytesPerFrame;
+        auto sampleAt = [&](size_t frame, int ch) -> int32_t
+        {
+            const uint8_t *p = pcm + frame * bytesPerFrame + static_cast<size_t>(std::min<int>(ch, channels - 1)) * (bits / 8u);
+            if (bits == 8)
+                return (static_cast<int32_t>(*p) - 128) << 8;
+            int16_t v;
+            std::memcpy(&v, p, 2);
+            return v;
+        };
+        const double step = static_cast<double>(rate) / 48000.0;
+        const size_t outFrames = static_cast<size_t>(static_cast<double>(frames) / step);
+        out.resize(outFrames * 2u);
+        for (size_t i = 0; i < outFrames; ++i)
+        {
+            const double srcPos = static_cast<double>(i) * step;
+            const size_t a = static_cast<size_t>(srcPos);
+            const size_t b = std::min(a + 1u, frames - 1u);
+            const double t = srcPos - static_cast<double>(a);
+            for (int ch = 0; ch < 2; ++ch)
+                out[i * 2u + static_cast<size_t>(ch)] = static_cast<int16_t>(sampleAt(a, ch) + (sampleAt(b, ch) - sampleAt(a, ch)) * t);
+        }
+        return !out.empty();
+    }
+}
+
+bool PS2AudioBackend::setMusicOverride(const std::string &path)
+{
+    if (path == m_musicPath)
+        return m_musicActive.load() || path.empty();
+    std::vector<int16_t> pcm;
+    const bool ok = path.empty() || loadWav48k(path, pcm);
+    {
+        std::lock_guard<std::mutex> lock(m_musicMutex);
+        m_music = std::move(pcm);
+        m_musicPos = 0;
+        m_musicPath = path;
+        m_musicActive.store(ok && !m_music.empty());
+    }
+    if (!ok)
+        std::fprintf(stderr, "[audio] cannot load music override: %s\n", path.c_str());
+    return ok;
 }

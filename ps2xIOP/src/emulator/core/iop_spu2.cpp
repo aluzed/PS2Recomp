@@ -2,6 +2,7 @@
 // (ps2xIOP/src/emulator/core/iop_spu2.*, commit 7c9e1f8, GPL-3.0), itself based on
 // PCSX2's SPU2 (GPL-3.0). Changes: push-mode output callback for the host stream.
 #include "iop_spu2.h"
+#include "ps2x/iop/iop_audio_control.h"
 
 #include <algorithm>
 #include <cmath>
@@ -870,11 +871,14 @@ namespace ps2x::iop::detail
             }
 
             int32_t previousOut = 0;
+            const uint32_t muted = ps2x::iop::spu2MutedVoices(coreIndex);
             for (int voiceIndex = 0; voiceIndex < 24; ++voiceIndex)
             {
                 int32_t left;
                 int32_t right;
                 previousOut = mixVoice(core, coreIndex, voiceIndex, previousOut, left, right);
+                if ((muted >> voiceIndex) & 1u)
+                    left = right = 0;
                 if ((core.vmixL >> voiceIndex) & 1u)
                     dryL[coreIndex] += left;
                 if ((core.vmixR >> voiceIndex) & 1u)

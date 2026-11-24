@@ -1,4 +1,5 @@
 #include "iop_rpc.h"
+#include "ps2x/iop/iop_audio_control.h"
 
 #include "../core/iop_cpu.h"
 #include "../core/iop_kernel.h"
@@ -284,6 +285,16 @@ namespace ps2x::iop::detail
             return result;
 
         RpcServer &server = serverIt->second;
+        if (request.sid == 0x502u && request.function == 0x102u && request.send.size >= 12u)
+        {
+            uint32_t words[3] = {};
+            if (m_host.readGuest(request.send.address, words, sizeof(words)))
+            {
+                ps2x::iop::noteMusicRequest(words[2]);
+                if (std::getenv("PS2X_MUSIC_TRACE"))
+                    std::fprintf(stderr, "[MUSIC] play track 0x%x\n", words[2]);
+            }
+        }
         {
             // PS2X_RPC_TRACE=1: first calls of each (sid, function) and periodic counts.
             static const bool trace = std::getenv("PS2X_RPC_TRACE") != nullptr;

@@ -1,7 +1,9 @@
 #ifndef PS2_AUDIO_H
 #define PS2_AUDIO_H
 
+#include <atomic>
 #include <cstdint>
+#include <string>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -33,6 +35,13 @@ public:
     void pushPcm(const int16_t *frames, size_t count);
     void pullPcm(int16_t *out, size_t count);
 
+    // Host music track mixed over the SPU2 output (custom stage music).
+    // PCM WAV (8/16-bit, mono/stereo, any rate; resampled to 48 kHz), looped.
+    // Same path again keeps playing; an empty path stops. Returns false when
+    // the file cannot be read.
+    bool setMusicOverride(const std::string &path);
+    [[nodiscard]] bool musicOverrideActive() const { return m_musicActive.load(); }
+
 private:
     struct DecodedSample
     {
@@ -53,6 +62,11 @@ private:
     size_t m_ringRead = 0, m_ringCount = 0;
     bool m_streamActive = false;
     uint64_t m_underruns = 0, m_dropped = 0, m_pushed = 0;
+    std::mutex m_musicMutex;
+    std::vector<int16_t> m_music;     // interleaved stereo, 48 kHz
+    size_t m_musicPos = 0;
+    std::string m_musicPath;
+    std::atomic<bool> m_musicActive{false};
 
     void playDecodedSample(uint32_t sampleKey, DecodedSample &sample, float pitch, float volume,
                           bool isBgm = false);
