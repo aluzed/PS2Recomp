@@ -468,21 +468,22 @@ static void KeyBackground(std::vector<uint8_t> &rgba, uint32_t stride, uint32_t 
     }
 }
 
-// Colour keying (see PS2Runtime::setBackgroundKeyColor), for a magenta-like key:
-// - pixels within a small tolerance of the key colour: transparent (RGB set to black so the
-//   bilinear scaling of the frame does not bleed the key colour into the fighters' edges);
-// - pixels reachable from those through "darkened key" pixels (key hue scaled by k: the
-//   game's shadows drawn over the cleared background): black with alpha 1 - k, so the
-//   shadows land on the host background;
-// - other pixels touching the keyed area: the key colour's spill is removed.
+// Colour keying (see PS2Runtime::setBackgroundKeyColor), for a magenta-like key K:
+// - pixels within PS2X_KEY_TOL of K: transparent (RGB black, so the bilinear scaling of the
+//   frame does not bleed K into the fighters' edges);
+// - reachable from those (4-connected), two kinds of pixels made of K mixed with something:
+//   * shadows (K darkened: G ~ 0, R ~ B): black with alpha 1 - k;
+//   * hit sparks and glows added over K (R and B saturated): un-mixed from K, i.e.
+//     P = a*C + (1-a)*K with C assumed neutral -> a = 1 - (min(R,B) - G) / 255;
+//   the conditions are strict so that dark purple parts of fighters are not touched;
+// - two pixel rings around the keyed area: the K spill is removed.
 static void KeyColour(std::vector<uint8_t> &rgba, uint32_t stride, uint32_t width, uint32_t height, uint32_t key)
 {
-    // PS2X_KEY_TOL: per-channel tolerance around the key colour (default 48).
     static const int kTol = [] { const char *e = std::getenv("PS2X_KEY_TOL"); return e && *e ? std::atoi(e) : 48; }();
     const int kr = static_cast<int>((key >> 16) & 0xFFu), kg = static_cast<int>((key >> 8) & 0xFFu),
               kb = static_cast<int>(key & 0xFFu);
     const bool magentaLike = kr > 128 && kb > 128 && kg < 64;
-    static std::vector<uint8_t> s_keyed; // 0 = opaque, 1 = key, 2 = darkened key
+    static std::vector<uint8_t> s_keyed; // 0 opaque, 1 key, 2 un-mixed, 3/4 despill rings
     static std::vector<uint32_t> s_stack;
     s_keyed.assign(static_cast<size_t>(width) * height, 0u);
     s_stack.clear();
@@ -502,7 +503,31 @@ static void KeyColour(std::vector<uint8_t> &rgba, uint32_t stride, uint32_t widt
     }
     if (!magentaLike)
         return;
-    auto darkened = [&](const uint8_t *p) { return p[1] <= kTol && std::abs(p[0] - p[2]) <= 32 && (p[0] | p[2]) != 0; };
+    auto unmix = [&](uint8_t *p) -> bool {
+        const int r = p[0], g = p[1], b = p[2];
+        if (g <= 10 && std::abs(r - b) <= 16 && (r | b) != 0) // shadow over the key
+        {
+            const float k = std::min(1.0f, (r + b) / static_cast<float>(kr + kb));
+            p[0] = p[1] = p[2] = 0u;
+            p[3] = static_cast<uint8_t>(std::lround(255.0f * (1.0f - k)));
+            return true;
+        }
+        // glow added over the key (R, B saturated), or a dark/neutral colour blended with the
+        // key (HUD and text edges): R ~ B is required so purple fighters are not touched.
+        const bool glow = r >= 215 && b >= 215 && g < std::min(r, b) - 24;
+        const bool blend = std::abs(r - b) <= 12 && std::min(r, b) - g >= 32;
+        if (glow || blend)
+        {
+            const float a = std::max(0.04f, 1.0f - (std::min(r, b) - g) / 255.0f);
+            auto ch = [&](int v, int kv) { return static_cast<uint8_t>(std::clamp(std::lround((v - (1.0f - a) * kv) / a), 0L, 255L)); };
+            p[0] = ch(r, kr);
+            p[1] = ch(g, kg);
+            p[2] = ch(b, kb);
+            p[3] = static_cast<uint8_t>(std::lround(255.0f * a));
+            return true;
+        }
+        return false;
+    };
     while (!s_stack.empty())
     {
         const uint32_t i = s_stack.back();
@@ -514,29 +539,23 @@ static void KeyColour(std::vector<uint8_t> &rgba, uint32_t stride, uint32_t widt
         {
             if (j == UINT32_MAX || s_keyed[j])
                 continue;
-            uint8_t *p = px(j);
-            if (!darkened(p))
+            if (!unmix(px(j)))
                 continue;
-            const float k = std::min(1.0f, (p[0] + p[2]) / static_cast<float>(kr + kb));
             s_keyed[j] = 2u;
-            p[0] = p[1] = p[2] = 0u;
-            p[3] = static_cast<uint8_t>(std::lround(255.0f * (1.0f - k)));
             s_stack.push_back(j);
         }
     }
-    // Despill within 2 pixels of the keyed area (bilinear-filtered text and sprite edges
-    // blend the key colour over two pixels). 3 = first ring, 4 = second ring.
     for (int ring = 0; ring < 2; ++ring)
     {
-        const uint8_t from = ring == 0 ? 0u : 3u, mark = static_cast<uint8_t>(3u + ring);
+        const uint8_t mark = static_cast<uint8_t>(3u + ring);
         for (uint32_t i = 0; i < width * height; ++i)
         {
             if (s_keyed[i])
                 continue;
             const uint32_t x = i % width, y = i / width;
-            auto is = [&](uint32_t j) { return ring == 0 ? (s_keyed[j] == 1u || s_keyed[j] == 2u) : s_keyed[j] == from; };
+            auto is = [&](uint32_t j) { return ring == 0 ? (s_keyed[j] == 1u || s_keyed[j] == 2u) : s_keyed[j] == 3u; };
             if ((x > 0 && is(i - 1)) || (x + 1 < width && is(i + 1)) || (y > 0 && is(i - width)) || (y + 1 < height && is(i + width)))
-                s_keyed[i] = 5u; // pending, so this pass does not chain
+                s_keyed[i] = 5u;
         }
         for (uint32_t i = 0; i < width * height; ++i)
             if (s_keyed[i] == 5u)
