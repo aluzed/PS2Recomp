@@ -526,6 +526,20 @@ static void KeyColour(std::vector<uint8_t> &rgba, uint32_t stride, uint32_t widt
             p[3] = static_cast<uint8_t>(std::lround(255.0f * a));
             return true;
         }
+        // a red or blue edge blended with the key (SFEX3 power gauge top row, (216, 0, 192)):
+        // G ~ 0, one of R / B kept, the other one gives the key's share (the colour is assumed
+        // to have none of it): P = a*C + (1-a)*K with C.b = 0 (red) or C.r = 0 (blue).
+        if (g <= 24 && std::abs(r - b) > 12 && std::max(r, b) >= 180 && std::min(r, b) >= 96)
+        {
+            const bool red = r > b;
+            const float a = std::max(0.04f, 1.0f - (red ? b : r) / static_cast<float>(red ? kb : kr));
+            auto ch = [&](int v, int kv) { return static_cast<uint8_t>(std::clamp(std::lround((v - (1.0f - a) * kv) / a), 0L, 255L)); };
+            p[0] = red ? ch(r, kr) : 0u;
+            p[1] = ch(g, kg);
+            p[2] = red ? 0u : ch(b, kb);
+            p[3] = static_cast<uint8_t>(std::lround(255.0f * a));
+            return true;
+        }
         return false;
     };
     while (!s_stack.empty())
@@ -544,6 +558,13 @@ static void KeyColour(std::vector<uint8_t> &rgba, uint32_t stride, uint32_t widt
             s_keyed[j] = 2u;
             s_stack.push_back(j);
         }
+    }
+    // vivid key mixes cut off from the keyed area by opaque HUD pixels (timer and gauge edges)
+    for (uint32_t i = 0; i < width * height; ++i)
+    {
+        uint8_t *p = px(i);
+        if (!s_keyed[i] && p[1] <= 24 && std::min(p[0], p[2]) >= 170 && unmix(p))
+            s_keyed[i] = 2u;
     }
     for (int ring = 0; ring < 2; ++ring)
     {
