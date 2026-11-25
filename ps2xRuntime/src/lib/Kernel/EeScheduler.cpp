@@ -361,6 +361,8 @@ bool EeScheduler::checkpointDueSlow() noexcept
 {
     flushAccounting();
     m_fastUntilCycle = 0u;
+    if (m_hostCallDepth > 0)
+        return false;
 
     if (m_checkpointPending.load(std::memory_order_acquire) ||
         m_stopRequested.load(std::memory_order_acquire))

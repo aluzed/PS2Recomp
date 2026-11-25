@@ -1470,6 +1470,30 @@ const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
     }
 }
 
+bool PS2Runtime::callGuestFunction(uint8_t *rdram, R5900Context *ctx, uint32_t address)
+{
+    constexpr uint32_t kReturnMarker = 0x0000FFF0u; // never code: the call is over when pc gets there
+    const uint32_t savedRa = GPR_U32(ctx, 31);
+    SET_GPR_U32(ctx, 31, kReturnMarker);
+    ctx->pc = address;
+    m_eeScheduler->enterHostCall();
+    bool ok = true;
+    for (uint64_t steps = 0; ctx->pc != kReturnMarker; ++steps)
+    {
+        uint32_t slot = 0u;
+        RecompiledFunction fn = generatedFunctionTableSlot(ctx->pc, slot) ? g_ps2RecompiledFunctionTable[slot] : nullptr;
+        if (fn == nullptr || steps > 50000000u || m_stopRequested.load(std::memory_order_relaxed))
+        {
+            ok = false;
+            break;
+        }
+        fn(rdram, ctx, this);
+    }
+    m_eeScheduler->leaveHostCall();
+    SET_GPR_U32(ctx, 31, savedRa);
+    return ok;
+}
+
 PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
 {
     pushDispatchPc(address);

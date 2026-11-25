@@ -331,6 +331,10 @@ public:
     int setAlarm(uint16_t ticks, uint32_t handler, uint32_t argument, uint32_t gp, uint32_t sp);
     int cancelAlarm(int id);
     void queueInvocation(GuestInvocation invocation);
+    // Host code running a guest function to completion (PS2Runtime::callGuestFunction): no
+    // checkpoint stops it; the pending events are taken after it returns.
+    void enterHostCall() noexcept { ++m_hostCallDepth; }
+    void leaveHostCall() noexcept { --m_hostCallDepth; }
     [[noreturn]] void invokeCurrent(GuestInvocation invocation);
     [[noreturn]] void invokeCurrentSequence(std::vector<GuestInvocation> invocations);
     [[nodiscard]] bool hasInvocation(GuestInvocationKind kind, uint64_t tag) const;
@@ -459,6 +463,7 @@ private:
     uint64_t m_eeCycle = 0;
     uint64_t m_unaccountedCycles = 0; // counted in m_eeCycle, not yet given to timers / IOP
     uint64_t m_fastUntilCycle = 0;    // checkpointDue() fast path below this cycle
+    int m_hostCallDepth = 0;          // > 0: inside callGuestFunction, never yield
     bool checkpointDueSlow() noexcept;
     void flushAccounting() noexcept;
     uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;

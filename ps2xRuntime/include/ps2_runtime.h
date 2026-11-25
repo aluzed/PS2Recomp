@@ -419,6 +419,10 @@ public:
     // TODO remove this later need to update all tests
     bool registerFunction(uint32_t address, RecompiledFunction func);
     RecompiledFunction lookupFunction(uint32_t address);
+    // Runs the guest function at `address` to its return, from host code (a hook): arguments in
+    // ctx, results in ctx; $ra is used as the return marker. The EE does not yield meanwhile
+    // (events wait). False if it did not return (missing code, stop, too long).
+    bool callGuestFunction(uint8_t *rdram, R5900Context *ctx, uint32_t address);
     bool hasFunction(uint32_t address) const;
     bool dispatchGuestBranch(uint8_t *rdram,
                              R5900Context *ctx,
